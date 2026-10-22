@@ -442,13 +442,19 @@ func (s *Server) applySessionUpdate(c *gin.Context, sessionID, owner string, req
 	}
 
 	now := nowMillis()
-	if _, err := s.db.Pool.Exec(c.Request.Context(),
+	result, err := s.db.Pool.Exec(c.Request.Context(),
 		`UPDATE sessions SET agent_overrides_json=$1, environment_id=$2, memory_store_ids_json=$3,
 		 vault_ids_json=$4, version=version+1, updated_at=$5
-		 WHERE session_id=$6`,
-		nullIfEmpty(overridesJSON), envID, mustJSON(memIDs), mustJSON(vaultIDs), now, sessionID); err != nil {
+		 WHERE session_id=$6 AND version=$7 AND archived_at IS NULL`,
+		nullIfEmpty(overridesJSON), envID, mustJSON(memIDs), mustJSON(vaultIDs), now, sessionID, sess.Version)
+	if err != nil {
 		writeErr(c, http.StatusInternalServerError, err.Error())
 		return sessionRow{}, err
+	}
+	// 读取和合并之间若有其它写入，拒绝旧快照覆盖新版本；调用方可重读后重试。
+	if result.RowsAffected() == 0 {
+		writeErr(c, http.StatusConflict, "session changed; reload and retry")
+		return sessionRow{}, errConflict
 	}
 	return s.loadSession(c.Request.Context(), sessionID)
 }
