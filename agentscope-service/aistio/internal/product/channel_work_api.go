@@ -413,7 +413,8 @@ func (s *Server) channelWorkActivity(c *gin.Context) {
 	deliveries := []gin.H{}
 	rows, e = s.db.Pool.Query(ctx, `SELECT id,issue_id,
  CASE WHEN state='submitted' AND next_attempt<=now() THEN 'uncertain' ELSE state END AS visible_state,
- attempts,provider_message_id,last_error,resolution_evidence,resolved_by,resolved_at,created_at
+ attempts,provider_message_id,last_error,resolution_evidence,resolved_by,resolved_at,created_at,
+ COALESCE(address->>'accountId',''),COALESCE(address->>'peerKind',''),COALESCE(address->>'peerId',''),text
  FROM channel_deliveries WHERE channel_id=$1 AND user_id=$2 ORDER BY created_at DESC LIMIT 100`, ch.ChannelID, user)
 	if e != nil {
 		writeErr(c, 500, "cannot read deliveries")
@@ -422,10 +423,11 @@ func (s *Server) channelWorkActivity(c *gin.Context) {
 	for rows.Next() {
 		var id uuid.UUID
 		var issue *uuid.UUID
-		var state, provider, errText, evidence, resolvedBy string
+		var state, provider, errText, evidence, resolvedBy, accountID, peerKind, peerID, deliveryText string
 		var attempts int
 		var created, resolvedAt any
-		if rows.Scan(&id, &issue, &state, &attempts, &provider, &errText, &evidence, &resolvedBy, &resolvedAt, &created) != nil {
+		if rows.Scan(&id, &issue, &state, &attempts, &provider, &errText, &evidence, &resolvedBy, &resolvedAt, &created,
+			&accountID, &peerKind, &peerID, &deliveryText) != nil {
 			continue
 		}
 		if issue != nil {
@@ -433,7 +435,8 @@ func (s *Server) channelWorkActivity(c *gin.Context) {
 				continue
 			}
 		}
-		deliveries = append(deliveries, gin.H{"id": id, "issueId": issue, "state": state, "attempts": attempts, "providerMessageId": provider, "lastError": errText, "resolutionEvidence": evidence, "resolvedBy": resolvedBy, "resolvedAt": resolvedAt, "createdAt": created})
+		deliveries = append(deliveries, gin.H{"id": id, "issueId": issue, "state": state, "attempts": attempts, "providerMessageId": provider, "lastError": errText, "resolutionEvidence": evidence, "resolvedBy": resolvedBy, "resolvedAt": resolvedAt, "createdAt": created,
+			"accountId": accountID, "peerKind": peerKind, "peerId": peerID, "text": deliveryText})
 	}
 	rows.Close()
 	links := []gin.H{}

@@ -355,7 +355,10 @@ func TestChannelDeliveryExpiredLeaseRequiresManualReconciliation(t *testing.T) {
 		t.Fatal(err)
 	}
 	activity := f.request(t, "GET", "/api/channels/"+f.ch.ChannelID+"/activity", nil, f.user)
-	if activity.Code != 200 || !strings.Contains(activity.Body.String(), `"state":"uncertain"`) {
+	if activity.Code != 200 || !strings.Contains(activity.Body.String(), `"state":"uncertain"`) ||
+		!strings.Contains(activity.Body.String(), `"text":"reply"`) ||
+		!strings.Contains(activity.Body.String(), `"peerId":`) ||
+		!strings.Contains(activity.Body.String(), `"createdAt":`) {
 		t.Fatalf("expired submission not visible for reconciliation: %d %s", activity.Code, activity.Body.String())
 	}
 	claim := f.request(t, "POST", "/api/internal/channels/deliveries/claim", map[string]any{}, "")
