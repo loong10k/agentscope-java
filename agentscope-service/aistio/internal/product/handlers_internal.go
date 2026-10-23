@@ -1172,6 +1172,20 @@ func (s *Server) internalMemoryBinding(c *gin.Context) {
 		writeErr(c, http.StatusNotFound, "session not found")
 		return
 	}
+	if sess.ArchivedAt != nil {
+		writeErr(c, http.StatusForbidden, "session is archived")
+		return
+	}
+	var disabled bool
+	if err := s.db.Pool.QueryRow(c.Request.Context(),
+		`SELECT disabled FROM users WHERE user_id=$1`, sess.OwnerID).Scan(&disabled); err != nil {
+		writeErr(c, http.StatusServiceUnavailable, "session owner unavailable")
+		return
+	}
+	if disabled {
+		writeErr(c, http.StatusForbidden, "session owner is disabled")
+		return
+	}
 	storeID := c.Param("storeId")
 	bound := false
 	for _, id := range parseStringSlice(deref(sess.MemoryStoreIDsJSON)) {
