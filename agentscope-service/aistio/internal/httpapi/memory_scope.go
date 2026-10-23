@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"crypto/subtle"
 	"net/http"
 	"strings"
 
@@ -11,6 +12,17 @@ import (
 // memory writer. The internal token authenticates the caller; the Bearer token
 // is verified independently so a caller cannot supply an arbitrary user ID.
 func (s *Server) resolveMemoryScope(c *gin.Context) {
+	// 这个入口把实时账户和空间策略交给 Rust 写入端；Bearer 只证明用户身份，
+	// 还必须验证调用方持有内部凭据，且未配置凭据时不可退化为公开入口。
+	if s.internalToken == "" {
+		c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "memory scope internal token unavailable"})
+		return
+	}
+	provided := c.GetHeader("X-Builder-Internal-Token")
+	if subtle.ConstantTimeCompare([]byte(provided), []byte(s.internalToken)) != 1 {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid internal token"})
+		return
+	}
 	if s.product == nil || s.store == nil {
 		c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "memory scope unavailable"})
 		return
