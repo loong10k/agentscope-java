@@ -342,6 +342,10 @@ func TestChannelAsyncDeliveryRecoveryAndRevocation(t *testing.T) {
 }
 func TestChannelDeliveryExpiredLeaseRequiresManualReconciliation(t *testing.T) {
 	f := channelSetup(t)
+	capabilities := f.request(t, "GET", "/api/internal/channels/deliveries/capabilities", nil, "")
+	if capabilities.Code != 200 || !strings.Contains(capabilities.Body.String(), `"uncertainOutcomes":true`) {
+		t.Fatalf("safe delivery capability unavailable: %d %s", capabilities.Code, capabilities.Body.String())
+	}
 	ctx := t.Context()
 	id := uuid.New()
 	_, err := f.s.db.Pool.Exec(ctx, `INSERT INTO channel_deliveries(id,channel_id,address_key,address,user_id,event_key,text,state,attempts,lease_token,next_attempt)

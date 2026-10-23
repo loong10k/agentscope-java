@@ -46,7 +46,16 @@ func (s *Server) registerChannelWork(r gin.IRouter) {
 	r.DELETE("/api/channels/:channelId/links/:linkId", s.unsubscribeChannelWork)
 	r.POST("/api/internal/channels/inbound", s.receiveChannelInbound)
 	r.POST("/api/internal/channels/deliveries/claim", s.claimChannelDelivery)
+	r.GET("/api/internal/channels/deliveries/capabilities", s.channelDeliveryCapabilities)
 	r.POST("/api/internal/channels/deliveries/:deliveryId/receipt", s.channelDeliveryReceipt)
+}
+
+func (s *Server) channelDeliveryCapabilities(c *gin.Context) {
+	if s.channelWork == nil {
+		writeErr(c, 503, "channel collaboration unavailable")
+		return
+	}
+	c.JSON(200, gin.H{"version": 2, "uncertainOutcomes": true})
 }
 func (s *Server) channelOwned(c *gin.Context) (channelRow, bool) {
 	ch, err := s.loadChannel(c.Request.Context(), c.Param("channelId"))
