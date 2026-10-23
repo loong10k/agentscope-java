@@ -38,6 +38,7 @@ var errManagedSessionBusy = errors.New("managed session is busy")
 var errInvalidPinnedAgentVersion = errors.New("agent version is unavailable")
 
 func (s *Server) registerInternal(r gin.IRouter) {
+	r.GET("/api/internal/database/topology/:key", s.internalDatabaseTopology)
 	r.GET("/api/internal/sessions", s.internalListSessions)
 	r.GET("/api/internal/sessions/:id/resolve", s.internalResolveSession)
 	r.POST("/api/internal/sessions/find-or-create", s.internalFindOrCreateSession)
@@ -55,6 +56,29 @@ func (s *Server) registerInternal(r gin.IRouter) {
 	r.POST("/api/internal/deployments/:id/fire", s.internalFireDeployment)
 	r.GET("/api/internal/channels/config", s.internalChannelsConfig)
 	r.POST("/api/internal/channels/runtime", s.internalChannelRuntimeReport)
+}
+
+// internalDatabaseTopology answers whether the Rust caller holds a transaction
+// advisory lock in this exact PostgreSQL database. Locks are database-scoped;
+// a successful acquisition means the two planes are not sharing one database.
+func (s *Server) internalDatabaseTopology(c *gin.Context) {
+	key, err := strconv.ParseInt(c.Param("key"), 10, 64)
+	if err != nil {
+		writeErr(c, http.StatusBadRequest, "invalid topology key")
+		return
+	}
+	tx, err := s.db.Pool.Begin(c.Request.Context())
+	if err != nil {
+		writeErr(c, http.StatusServiceUnavailable, "database topology unavailable")
+		return
+	}
+	defer tx.Rollback(c.Request.Context())
+	var acquired bool
+	if err := tx.QueryRow(c.Request.Context(), `SELECT pg_try_advisory_xact_lock($1)`, key).Scan(&acquired); err != nil {
+		writeErr(c, http.StatusServiceUnavailable, "database topology unavailable")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"shared": !acquired})
 }
 
 func (s *Server) internalListSessions(c *gin.Context) {
