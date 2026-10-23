@@ -244,6 +244,99 @@ func TestManagedRuntimePatchCannotOverwriteNewerPreWakeFence(t *testing.T) {
 	}
 }
 
+func TestPersonalRuntimePatchRequiresCurrentTurnLease(t *testing.T) {
+	dsn := os.Getenv("AISTIO_TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("AISTIO_TEST_POSTGRES_DSN not set; skipping shared PostgreSQL test")
+	}
+	ctx := context.Background()
+	db, err := openDB(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(db.Close)
+	if err = migrate(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	var leaseTable *string
+	if err = db.Pool.QueryRow(ctx, `SELECT to_regclass('coord_leases')::text`).Scan(&leaseTable); err != nil {
+		t.Fatal(err)
+	}
+	if leaseTable == nil {
+		t.Fatal("Rust coord_leases migration must be applied to the same PostgreSQL database")
+	}
+	sessionID := "test-personal-lease-" + shortID("")
+	ownerID := "test-owner-" + shortID("")
+	now := nowMillis()
+	if _, err = db.Pool.Exec(ctx, `INSERT INTO sessions
+		(session_id,owner_id,agent_id,environment_id,status,version,created_at,updated_at)
+		VALUES($1,$2,'agent','environment','running',1,$3,$3)`, sessionID, ownerID, now); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = db.Pool.Exec(context.Background(), `DELETE FROM coord_leases WHERE lease_kind='turn' AND lease_key=$1`, sessionID)
+		_, _ = db.Pool.Exec(context.Background(), `DELETE FROM sessions WHERE session_id=$1`, sessionID)
+	})
+	if _, err = db.Pool.Exec(ctx, `INSERT INTO coord_leases
+		(lease_kind,lease_key,owner_id,instance_id,acquired_at,expires_at,fence)
+		VALUES('turn',$1,$2,'old-turn',$3,$4,1)`, sessionID, ownerID, now, now+60_000); err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{db: db}
+	router := gin.New()
+	server.registerInternal(router)
+	patch := func(instance string, fence int64) *httptest.ResponseRecorder {
+		body, marshalErr := json.Marshal(map[string]any{
+			"status": "idle", "leaseOwnerId": instance, "leaseFence": fence,
+		})
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		request := httptest.NewRequest(http.MethodPatch, "/api/internal/sessions/"+sessionID+"/runtime", bytes.NewReader(body))
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		return response
+	}
+	if response := patch("old-turn", 1); response.Code != http.StatusOK {
+		t.Fatalf("current lease patch=%d body=%s", response.Code, response.Body.String())
+	}
+	if _, err = db.Pool.Exec(ctx, `UPDATE sessions SET status='running' WHERE session_id=$1`, sessionID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Pool.Exec(ctx, `UPDATE coord_leases SET instance_id='new-turn',fence=2 WHERE lease_kind='turn' AND lease_key=$1`, sessionID); err != nil {
+		t.Fatal(err)
+	}
+	if response := patch("old-turn", 1); response.Code != http.StatusConflict {
+		t.Fatalf("superseded lease patch=%d body=%s", response.Code, response.Body.String())
+	}
+	var status string
+	if err = db.Pool.QueryRow(ctx, `SELECT status FROM sessions WHERE session_id=$1`, sessionID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "running" {
+		t.Fatalf("old lease changed new turn status to %q", status)
+	}
+	if response := patch("new-turn", 2); response.Code != http.StatusOK {
+		t.Fatalf("replacement lease patch=%d body=%s", response.Code, response.Body.String())
+	}
+	if _, err = db.Pool.Exec(ctx, `UPDATE sessions SET status='terminated' WHERE session_id=$1`, sessionID); err != nil {
+		t.Fatal(err)
+	}
+	if response := patch("new-turn", 2); response.Code != http.StatusConflict {
+		t.Fatalf("terminal session patch=%d body=%s", response.Code, response.Body.String())
+	}
+	if _, err = db.Pool.Exec(ctx, `UPDATE sessions SET status='running' WHERE session_id=$1`, sessionID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Pool.Exec(ctx, `UPDATE coord_leases SET expires_at=0 WHERE lease_kind='turn' AND lease_key=$1`, sessionID); err != nil {
+		t.Fatal(err)
+	}
+	if response := patch("new-turn", 2); response.Code != http.StatusConflict {
+		t.Fatalf("expired lease patch=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func TestEnsureDefaultLocalEnvironmentIsConcurrentAndIdempotent(t *testing.T) {
 	dsn := os.Getenv("AISTIO_TEST_POSTGRES_DSN")
 	if dsn == "" {
