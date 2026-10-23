@@ -296,6 +296,11 @@ func TestChannelAsyncDeliveryRecoveryAndRevocation(t *testing.T) {
 	}
 	var d map[string]any
 	json.Unmarshal(claim.Body.Bytes(), &d)
+	firstText := d["text"].(string)
+	var persistedText string
+	if e = f.s.db.Pool.QueryRow(ctx, `SELECT text FROM channel_deliveries WHERE id=$1`, d["id"]).Scan(&persistedText); e != nil || persistedText != firstText {
+		t.Fatalf("actual send text was not frozen: %q %q %v", persistedText, firstText, e)
+	}
 	receiptPath := "/api/internal/channels/deliveries/" + d["id"].(string) + "/receipt"
 	w := f.request(t, "POST", receiptPath, map[string]any{"leaseToken": "stale", "providerMessageId": "om-stale"}, "")
 	if w.Code != 409 {
@@ -305,12 +310,20 @@ func TestChannelAsyncDeliveryRecoveryAndRevocation(t *testing.T) {
 	if w.Code != 204 {
 		t.Fatal(w.Body.String())
 	}
+	changed := *comment.Comment
+	changed.Content = "Edited after first send attempt"
+	if _, e = f.s.channelWork.Store.Collaboration().UpdateComment(ctx, &changed, changed.Version); e != nil {
+		t.Fatal(e)
+	}
 	f.s.db.Pool.Exec(ctx, `UPDATE channel_deliveries SET next_attempt=now()-interval '1 second' WHERE id=$1`, d["id"])
 	claim = f.request(t, "POST", "/api/internal/channels/deliveries/claim", map[string]any{}, "")
 	if claim.Code != 200 {
 		t.Fatal(claim.Body.String())
 	}
 	json.Unmarshal(claim.Body.Bytes(), &d)
+	if d["text"] != firstText {
+		t.Fatalf("retry changed the frozen provider payload: %q != %q", d["text"], firstText)
+	}
 	w = f.request(t, "POST", receiptPath, map[string]any{"leaseToken": d["leaseToken"], "providerMessageId": "om-result"}, "")
 	if w.Code != 204 {
 		t.Fatal(w.Body.String())

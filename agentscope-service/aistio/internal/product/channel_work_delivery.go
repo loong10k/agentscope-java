@@ -154,10 +154,13 @@ func (s *Server) claimChannelDelivery(c *gin.Context) {
 			return
 		}
 		allowed = e == nil && comment.DeletedAt == nil
-		// Never replay stale copies of edited result content.
+		// 首次发送前读取最新结果；已经尝试发送后保持同一投递 ID 的正文不变。
 		if allowed && strings.HasPrefix(event, "comment:") {
 			allowed = slices.Contains(cfg.NotifyEvents, string(comment.Type))
-			text = "Issue: " + comment.IssueID.String() + "\n" + comment.Content
+			if attempts == 0 {
+				// 首次领取冻结真正发送的正文；后续可重试失败不得改变同一投递 ID 的载荷。
+				text = "Issue: " + comment.IssueID.String() + "\n" + comment.Content
+			}
 		}
 	}
 	if !allowed || attempts >= 10 {
@@ -177,12 +180,13 @@ func (s *Server) claimChannelDelivery(c *gin.Context) {
 		return
 	}
 	lease := uuid.NewString()
-	_, err = tx.Exec(ctx, `UPDATE channel_deliveries SET state='submitted',attempts=attempts+1,lease_token=$2,next_attempt=now()+interval '60 seconds',updated_at=now() WHERE id=$1`, id, lease)
+	sendText := channelNotificationText(text)
+	_, err = tx.Exec(ctx, `UPDATE channel_deliveries SET state='submitted',attempts=attempts+1,lease_token=$2,text=$3,next_attempt=now()+interval '60 seconds',updated_at=now() WHERE id=$1`, id, lease, sendText)
 	if err != nil || tx.Commit(ctx) != nil {
 		writeErr(c, 503, "delivery queue unavailable")
 		return
 	}
-	c.JSON(200, gin.H{"id": id, "leaseToken": lease, "channelId": chID, "accountId": in.AccountID, "peerKind": in.PeerKind, "peerId": in.PeerID, "threadId": in.ThreadID, "text": channelNotificationText(text)})
+	c.JSON(200, gin.H{"id": id, "leaseToken": lease, "channelId": chID, "accountId": in.AccountID, "peerKind": in.PeerKind, "peerId": in.PeerID, "threadId": in.ThreadID, "text": sendText})
 }
 func (s *Server) channelDeliveryReceipt(c *gin.Context) {
 	var req struct {
