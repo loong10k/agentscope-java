@@ -41,14 +41,25 @@ func (s *Server) claimChannelDelivery(c *gin.Context) {
 		return
 	}
 	defer tx.Rollback(ctx)
+	// 提交后的租约过期不能证明平台未收到消息；先转入人工核验，禁止自动再领。
+	if _, err = tx.Exec(ctx, `UPDATE channel_deliveries SET state='uncertain',last_error='delivery lease expired after submission; verify provider',updated_at=now()
+ WHERE id IN (SELECT id FROM channel_deliveries WHERE state='submitted' AND next_attempt<=now()
+ ORDER BY next_attempt,id FOR UPDATE SKIP LOCKED LIMIT 100)`); err != nil {
+		writeErr(c, 503, "delivery queue unavailable")
+		return
+	}
 	var id uuid.UUID
 	var chID, user, text, event string
 	var raw []byte
 	var issueID *uuid.UUID
 	var commentID *uuid.UUID
 	var attempts int
-	err = tx.QueryRow(ctx, `SELECT id,channel_id,address,user_id,issue_id,comment_id,text,attempts,event_key FROM channel_deliveries WHERE state IN ('pending','submitted') AND next_attempt<=now() ORDER BY next_attempt,id FOR UPDATE SKIP LOCKED LIMIT 1`).Scan(&id, &chID, &raw, &user, &issueID, &commentID, &text, &attempts, &event)
+	err = tx.QueryRow(ctx, `SELECT id,channel_id,address,user_id,issue_id,comment_id,text,attempts,event_key FROM channel_deliveries WHERE state='pending' AND next_attempt<=now() ORDER BY next_attempt,id FOR UPDATE SKIP LOCKED LIMIT 1`).Scan(&id, &chID, &raw, &user, &issueID, &commentID, &text, &attempts, &event)
 	if errors.Is(err, pgx.ErrNoRows) {
+		if tx.Commit(ctx) != nil {
+			writeErr(c, 503, "delivery queue unavailable")
+			return
+		}
 		c.Status(204)
 		return
 	}
@@ -178,19 +189,27 @@ func (s *Server) channelDeliveryReceipt(c *gin.Context) {
 		LeaseToken        string `json:"leaseToken"`
 		ProviderMessageID string `json:"providerMessageId"`
 		Error             string `json:"error"`
+		UncertainReason   string `json:"uncertainReason"`
 	}
 	id, e := uuid.Parse(c.Param("deliveryId"))
-	if e != nil || c.ShouldBindJSON(&req) != nil || req.LeaseToken == "" || len(req.ProviderMessageID) > 512 || len(req.Error) > 512 || (req.ProviderMessageID == "") == (req.Error == "") {
-		writeErr(c, 400, "receipt requires lease and either provider message ID or error")
+	if e != nil || c.ShouldBindJSON(&req) != nil || req.LeaseToken == "" || len(req.ProviderMessageID) > 512 || len(req.Error) > 512 || len(req.UncertainReason) > 512 ||
+		boolCount(req.ProviderMessageID != "", req.Error != "", req.UncertainReason != "") != 1 {
+		writeErr(c, 400, "receipt requires lease and exactly one provider message ID, error, or uncertain reason")
 		return
 	}
 	state := "provider_accepted"
 	if req.Error != "" {
 		state = "pending"
+	} else if req.UncertainReason != "" {
+		state = "uncertain"
+	}
+	lastError := req.Error
+	if state == "uncertain" {
+		lastError = req.UncertainReason
 	}
 	tag, e := s.db.Pool.Exec(c.Request.Context(), `UPDATE channel_deliveries SET state=CASE WHEN $3='pending' AND attempts>=10 THEN 'failed' ELSE $3 END,
  provider_message_id=$4,last_error=$5,next_attempt=now()+make_interval(secs=>LEAST(600,5*(1<<LEAST(attempts,7)))),updated_at=now()
- WHERE id=$1 AND state='submitted' AND lease_token=$2 AND next_attempt>now()`, id, req.LeaseToken, state, req.ProviderMessageID, req.Error)
+ WHERE id=$1 AND state='submitted' AND lease_token=$2 AND next_attempt>now()`, id, req.LeaseToken, state, req.ProviderMessageID, lastError)
 	if e != nil {
 		writeErr(c, 503, "cannot save receipt")
 		return
@@ -200,6 +219,16 @@ func (s *Server) channelDeliveryReceipt(c *gin.Context) {
 		return
 	}
 	c.Status(204)
+}
+
+func boolCount(values ...bool) int {
+	count := 0
+	for _, value := range values {
+		if value {
+			count++
+		}
+	}
+	return count
 }
 
 // Keep platform messages bounded; the durable Issue retains the complete result.

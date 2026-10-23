@@ -41,6 +41,7 @@ func (s *Server) registerChannelWork(r gin.IRouter) {
 	r.GET("/api/channels/:channelId/activity", s.channelWorkActivity)
 	r.DELETE("/api/channels/:channelId/identity", s.deleteChannelIdentity)
 	r.POST("/api/channels/:channelId/deliveries/:deliveryId/retry", s.retryChannelDelivery)
+	r.POST("/api/channels/:channelId/deliveries/:deliveryId/reconcile", s.reconcileChannelDelivery)
 	r.POST("/api/channels/:channelId/messages/:messageId/retry", s.retryChannelIntake)
 	r.DELETE("/api/channels/:channelId/links/:linkId", s.unsubscribeChannelWork)
 	r.POST("/api/internal/channels/inbound", s.receiveChannelInbound)
@@ -476,6 +477,51 @@ func (s *Server) retryChannelDelivery(c *gin.Context) {
 	}
 	if tag.RowsAffected() == 0 {
 		writeErr(c, 404, "failed delivery not found")
+		return
+	}
+	c.Status(204)
+}
+
+// 仅渠道所有者可依据平台核验结果解除未知发送状态；证据和操作者一同持久化。
+func (s *Server) reconcileChannelDelivery(c *gin.Context) {
+	ch, ok := s.channelOwned(c)
+	if !ok {
+		return
+	}
+	id, err := uuid.Parse(c.Param("deliveryId"))
+	if err != nil {
+		writeErr(c, 400, "invalid delivery")
+		return
+	}
+	var req struct {
+		Decision          string `json:"decision"`
+		ProviderMessageID string `json:"providerMessageId"`
+		Evidence          string `json:"evidence"`
+	}
+	if c.ShouldBindJSON(&req) != nil || len(req.Evidence) == 0 || len(req.Evidence) > 1024 ||
+		strings.TrimSpace(req.Evidence) == "" || len(req.ProviderMessageID) > 512 ||
+		(req.Decision != "delivered" && req.Decision != "notDelivered") ||
+		(req.Decision == "delivered" && strings.TrimSpace(req.ProviderMessageID) == "") ||
+		(req.Decision == "notDelivered" && req.ProviderMessageID != "") {
+		writeErr(c, 400, "decision, platform message ID, and bounded verification evidence are required")
+		return
+	}
+	state := "provider_accepted"
+	if req.Decision == "notDelivered" {
+		state = "pending"
+	}
+	tag, err := s.db.Pool.Exec(c.Request.Context(), `UPDATE channel_deliveries SET state=$4,
+	 provider_message_id=$5,last_error='',lease_token='',attempts=CASE WHEN $4='pending' THEN 0 ELSE attempts END,
+	 next_attempt=CASE WHEN $4='pending' THEN now() ELSE next_attempt END,
+	 resolution_evidence=$6,resolved_by=$3,resolved_at=now(),updated_at=now()
+	 WHERE id=$1 AND channel_id=$2 AND user_id=$3 AND state='uncertain'`,
+		id, ch.ChannelID, currentUserID(c), state, req.ProviderMessageID, strings.TrimSpace(req.Evidence))
+	if err != nil {
+		writeErr(c, 503, "cannot reconcile delivery")
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		writeErr(c, 409, "uncertain delivery not found")
 		return
 	}
 	c.Status(204)

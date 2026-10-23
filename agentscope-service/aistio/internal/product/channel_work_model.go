@@ -155,6 +155,9 @@ CREATE TABLE IF NOT EXISTS channel_deliveries (
  provider_message_id TEXT NOT NULL DEFAULT '', last_error TEXT NOT NULL DEFAULT '',
  created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+ALTER TABLE channel_deliveries ADD COLUMN IF NOT EXISTS resolution_evidence TEXT NOT NULL DEFAULT '';
+ALTER TABLE channel_deliveries ADD COLUMN IF NOT EXISTS resolved_by TEXT NOT NULL DEFAULT '';
+ALTER TABLE channel_deliveries ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMPTZ;
 CREATE INDEX IF NOT EXISTS channel_deliveries_pending ON channel_deliveries(next_attempt) WHERE state IN ('pending','submitted');
 CREATE INDEX IF NOT EXISTS channel_delivery_replies ON channel_deliveries(channel_id,address_key,provider_message_id) WHERE provider_message_id<>'';
 `

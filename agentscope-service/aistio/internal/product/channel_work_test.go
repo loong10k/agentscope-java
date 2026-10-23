@@ -340,6 +340,70 @@ func TestChannelAsyncDeliveryRecoveryAndRevocation(t *testing.T) {
 		t.Fatal("revoked identity received content", claim.Body.String())
 	}
 }
+func TestChannelDeliveryExpiredLeaseRequiresManualReconciliation(t *testing.T) {
+	f := channelSetup(t)
+	ctx := t.Context()
+	id := uuid.New()
+	_, err := f.s.db.Pool.Exec(ctx, `INSERT INTO channel_deliveries(id,channel_id,address_key,address,user_id,event_key,text,state,attempts,lease_token,next_attempt)
+	 VALUES($1,$2,'test-address',$3::jsonb,$4,$5,'reply','submitted',1,'old-lease',now()-interval '1 second')`,
+		id, f.ch.ChannelID, mustJSON(f.in), f.user, "test:"+id.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim := f.request(t, "POST", "/api/internal/channels/deliveries/claim", map[string]any{}, "")
+	if claim.Code != 204 {
+		t.Fatalf("expired submission was re-claimed: %d %s", claim.Code, claim.Body.String())
+	}
+	var state, evidence, actor string
+	if err = f.s.db.Pool.QueryRow(ctx, `SELECT state FROM channel_deliveries WHERE id=$1`, id).Scan(&state); err != nil || state != "uncertain" {
+		t.Fatalf("expired state: %s %v", state, err)
+	}
+	path := "/api/channels/" + f.ch.ChannelID + "/deliveries/" + id.String() + "/reconcile"
+	response := f.request(t, "POST", path, map[string]any{
+		"decision": "delivered", "providerMessageId": "platform-123", "evidence": "verified in provider console",
+	}, f.user)
+	if response.Code != 204 {
+		t.Fatalf("manual confirmation: %d %s", response.Code, response.Body.String())
+	}
+	if err = f.s.db.Pool.QueryRow(ctx, `SELECT state,resolution_evidence,resolved_by FROM channel_deliveries WHERE id=$1`, id).
+		Scan(&state, &evidence, &actor); err != nil || state != "provider_accepted" || evidence == "" || actor != f.user {
+		t.Fatalf("resolution: %s %q %q %v", state, evidence, actor, err)
+	}
+	response = f.request(t, "POST", path, map[string]any{
+		"decision": "notDelivered", "evidence": "provider search returned no message",
+	}, f.user)
+	if response.Code != 409 {
+		t.Fatalf("resolved delivery changed again: %d", response.Code)
+	}
+
+	second := uuid.New()
+	_, err = f.s.db.Pool.Exec(ctx, `INSERT INTO channel_deliveries(id,channel_id,address_key,address,user_id,event_key,text,state,attempts,lease_token,next_attempt)
+	 VALUES($1,$2,'test-address',$3::jsonb,$4,$5,'reply','submitted',1,'live-lease',now()+interval '1 minute')`,
+		second, f.ch.ChannelID, mustJSON(f.in), f.user, "test:"+second.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiptPath := "/api/internal/channels/deliveries/" + second.String() + "/receipt"
+	response = f.request(t, "POST", receiptPath, map[string]any{
+		"leaseToken": "live-lease", "uncertainReason": "ProviderDeliveryUnknown",
+	}, "")
+	if response.Code != 204 {
+		t.Fatalf("unknown receipt: %d %s", response.Code, response.Body.String())
+	}
+	secondPath := "/api/channels/" + f.ch.ChannelID + "/deliveries/" + second.String() + "/reconcile"
+	response = f.request(t, "POST", secondPath, map[string]any{
+		"decision": "notDelivered", "evidence": "verified absent in provider history",
+	}, f.user)
+	if response.Code != 204 {
+		t.Fatalf("manual requeue: %d %s", response.Code, response.Body.String())
+	}
+	var attempts int
+	if err = f.s.db.Pool.QueryRow(ctx, `SELECT state,attempts FROM channel_deliveries WHERE id=$1`, second).
+		Scan(&state, &attempts); err != nil || state != "pending" || attempts != 0 {
+		t.Fatalf("manual requeue state: %s %d %v", state, attempts, err)
+	}
+}
+
 func TestChannelPairingAndConfigurationCAS(t *testing.T) {
 	f := channelSetup(t)
 	path := "/api/channels/" + f.ch.ChannelID
