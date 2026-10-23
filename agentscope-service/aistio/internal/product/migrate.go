@@ -26,21 +26,40 @@ SET search_path TO cp;
 
 CREATE TABLE IF NOT EXISTS memory_authority_fence (
     singleton BOOLEAN PRIMARY KEY DEFAULT true CHECK (singleton),
-    authority TEXT NOT NULL DEFAULT 'go' CHECK (authority IN ('go','rust')),
+    authority TEXT NOT NULL DEFAULT 'go' CHECK (authority IN ('go','frozen','rust')),
     data_sha256 TEXT,
     activated_at TIMESTAMPTZ,
     activated_by TEXT
 );
 INSERT INTO memory_authority_fence(singleton,authority)
 VALUES(true,'go') ON CONFLICT(singleton) DO NOTHING;
+DO $$ BEGIN
+    IF EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='cp.memory_authority_fence'::regclass
+        AND conname='memory_authority_fence_authority_check'
+        AND pg_get_constraintdef(oid) NOT LIKE '%frozen%') THEN
+        ALTER TABLE cp.memory_authority_fence DROP CONSTRAINT memory_authority_fence_authority_check;
+        ALTER TABLE cp.memory_authority_fence ADD CONSTRAINT memory_authority_fence_authority_check
+            CHECK (authority IN ('go','frozen','rust'));
+    END IF;
+END $$;
 CREATE TABLE IF NOT EXISTS memory_authority_fence_history (
     id BIGSERIAL PRIMARY KEY,
-    action TEXT NOT NULL CHECK (action IN ('activate','abort')),
-    data_sha256 TEXT NOT NULL,
+    action TEXT NOT NULL CHECK (action IN ('freeze','activate','abort')),
+    data_sha256 TEXT,
     actor TEXT NOT NULL,
     reason TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+ALTER TABLE memory_authority_fence_history ALTER COLUMN data_sha256 DROP NOT NULL;
+DO $$ BEGIN
+    IF EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='cp.memory_authority_fence_history'::regclass
+        AND conname='memory_authority_fence_history_action_check'
+        AND pg_get_constraintdef(oid) NOT LIKE '%freeze%') THEN
+        ALTER TABLE cp.memory_authority_fence_history DROP CONSTRAINT memory_authority_fence_history_action_check;
+        ALTER TABLE cp.memory_authority_fence_history ADD CONSTRAINT memory_authority_fence_history_action_check
+            CHECK (action IN ('freeze','activate','abort'));
+    END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS users (
     user_id       TEXT PRIMARY KEY,

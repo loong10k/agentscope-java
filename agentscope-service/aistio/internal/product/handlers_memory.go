@@ -44,25 +44,30 @@ const memoryVersionsPrefix = "versions/"
 
 // memoryAuthorityFenced reads the durable source-side cutover marker. Failure
 // must not reopen Go writes or serve stale reads after a restart.
-func (s *Server) memoryAuthorityFenced(ctx context.Context) (bool, error) {
+func (s *Server) memoryAuthorityState(ctx context.Context) (string, error) {
 	var authority string
 	err := s.db.Pool.QueryRow(ctx,
 		`SELECT authority FROM cp.memory_authority_fence WHERE singleton=true`).Scan(&authority)
 	if err != nil {
-		return false, err
+		return "", err
 	}
-	return authority == "rust", nil
+	return authority, nil
+}
+
+func (s *Server) memoryAuthorityFenced(ctx context.Context) (bool, error) {
+	authority, err := s.memoryAuthorityState(ctx)
+	return authority == "rust", err
 }
 
 // memoryWritesFrozen prevents direct Go Web and internal-session writes during
 // the source freeze and after Rust becomes the sole memory writer.
 func (s *Server) memoryWritesFrozen(c *gin.Context) bool {
-	fenced, err := s.memoryAuthorityFenced(c.Request.Context())
+	authority, err := s.memoryAuthorityState(c.Request.Context())
 	if err != nil {
 		c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "memory authority fence unavailable"})
 		return true
 	}
-	if !fenced && os.Getenv("GO_WRITES_FROZEN") != "confirmed" && os.Getenv("AISTIO_MEMORY_AUTHORITY") != "rust" {
+	if authority == "go" && os.Getenv("GO_WRITES_FROZEN") != "confirmed" && os.Getenv("AISTIO_MEMORY_AUTHORITY") != "rust" {
 		return false
 	}
 	c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "memory writes frozen for Rust authority cutover"})

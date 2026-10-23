@@ -83,7 +83,7 @@ func (s *Server) internalMemoryAuthority(c *gin.Context) {
 		"authority":    authority,
 		"fenced":       fenced,
 		"dataSha256":   digest,
-		"writesFrozen": fenced || configured || os.Getenv("GO_WRITES_FROZEN") == "confirmed",
+		"writesFrozen": persisted != "go" || configured || os.Getenv("GO_WRITES_FROZEN") == "confirmed",
 	})
 }
 
@@ -124,7 +124,7 @@ func (s *Server) internalFenceMemoryAuthority(c *gin.Context) {
 			writeErr(c, http.StatusConflict, "memory authority fence digest differs")
 			return
 		}
-	} else {
+	} else if authority == "frozen" {
 		_, err = tx.Exec(c.Request.Context(),
 			`UPDATE cp.memory_authority_fence SET authority='rust',data_sha256=$1,activated_at=now(),activated_by=$2 WHERE singleton=true`,
 			req.DataSha256, req.ApprovedBy)
@@ -138,6 +138,9 @@ func (s *Server) internalFenceMemoryAuthority(c *gin.Context) {
 			writeErr(c, http.StatusServiceUnavailable, "memory authority fence audit unavailable")
 			return
 		}
+	} else {
+		writeErr(c, http.StatusConflict, "Go memory source must be durably frozen before Rust cutover")
+		return
 	}
 	if err := tx.Commit(c.Request.Context()); err != nil {
 		writeErr(c, http.StatusServiceUnavailable, "memory authority fence unavailable")
