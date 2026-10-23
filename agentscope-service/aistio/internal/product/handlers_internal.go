@@ -670,7 +670,9 @@ func (s *Server) internalPatchSessionRuntime(c *gin.Context) {
 	var req struct {
 		Status *string `json:"status"`
 		ManagedRuntimeFence
-		StopReason any `json:"stopReason"`
+		StopReason   any     `json:"stopReason"`
+		LeaseOwnerID *string `json:"leaseOwnerId"`
+		LeaseFence   *int64  `json:"leaseFence"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		writeErr(c, http.StatusBadRequest, "invalid body")
@@ -711,9 +713,36 @@ func (s *Server) internalPatchSessionRuntime(c *gin.Context) {
 		writeErr(c, http.StatusConflict, ErrManagedRuntimeFenceConflict.Error())
 		return
 	}
+	if (req.LeaseOwnerID == nil) != (req.LeaseFence == nil) ||
+		(managed && req.LeaseOwnerID != nil) ||
+		(req.LeaseOwnerID != nil && (*req.LeaseOwnerID == "" || *req.LeaseFence <= 0)) {
+		writeErr(c, http.StatusBadRequest, "invalid turn lease fence")
+		return
+	}
 	if managed && !managedRuntimeFenceCanAdvance(sess, fence) || !managed && sess.RuntimeDispatchGen != nil {
 		writeErr(c, http.StatusConflict, "managed runtime fence is older than the accepted session scope")
 		return
+	}
+	if req.LeaseOwnerID != nil {
+		// sessions 与 coord_leases 必须位于同一 PostgreSQL 数据库。锁住当前租约行后，
+		// 新 turn 的 CAS 接管只能排在本事务之后；旧 fence 在接管先提交时会被拒绝。
+		var marker int
+		err = tx.QueryRow(c.Request.Context(), `SELECT 1 FROM coord_leases
+			WHERE lease_kind='turn' AND lease_key=$1 AND owner_id=$2 AND instance_id=$3
+			AND fence=$4 AND expires_at>(extract(epoch from clock_timestamp())*1000)::bigint
+			FOR UPDATE`, sess.SessionID, sess.OwnerID, *req.LeaseOwnerID, *req.LeaseFence).Scan(&marker)
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeErr(c, http.StatusConflict, "turn lease fence is no longer current")
+			return
+		}
+		if err != nil {
+			writeErr(c, http.StatusServiceUnavailable, "turn lease fence is unavailable")
+			return
+		}
+		if req.Status != nil && *req.Status == "idle" && sess.Status != "running" && sess.Status != "idle" {
+			writeErr(c, http.StatusConflict, "session is no longer running")
+			return
+		}
 	}
 	status := sess.Status
 	if req.Status != nil {
@@ -731,13 +760,22 @@ func (s *Server) internalPatchSessionRuntime(c *gin.Context) {
 				runtime_agent_task_id=$3 AND runtime_attempt_id=$4 AND runtime_turn_id=$6))
 			RETURNING version`, status, stop, fence.AgentTaskID, fence.AttemptID,
 			fence.DispatchGeneration, fence.TurnID, now, sess.SessionID).Scan(&updatedVersion)
+	} else if req.LeaseOwnerID != nil {
+		err = tx.QueryRow(c.Request.Context(), `UPDATE sessions SET status=$1, stop_reason_json=$2,
+			version=version+1,updated_at=$3 WHERE session_id=$4 AND archived_at IS NULL
+			AND runtime_dispatch_generation IS NULL AND EXISTS (
+				SELECT 1 FROM coord_leases WHERE lease_kind='turn' AND lease_key=$4 AND owner_id=$5
+				AND instance_id=$6 AND fence=$7
+				AND expires_at>(extract(epoch from clock_timestamp())*1000)::bigint)
+			RETURNING version`, status, stop, now, sess.SessionID, sess.OwnerID,
+			*req.LeaseOwnerID, *req.LeaseFence).Scan(&updatedVersion)
 	} else {
 		err = tx.QueryRow(c.Request.Context(), `UPDATE sessions SET status=$1, stop_reason_json=$2,
 			version=version+1,updated_at=$3 WHERE session_id=$4 AND archived_at IS NULL AND runtime_dispatch_generation IS NULL
 			RETURNING version`, status, stop, now, sess.SessionID).Scan(&updatedVersion)
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
-		writeErr(c, http.StatusConflict, "managed runtime fence lost its monotonic update race")
+		writeErr(c, http.StatusConflict, "runtime fence lost its monotonic update race")
 		return
 	}
 	if err != nil {
