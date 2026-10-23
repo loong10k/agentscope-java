@@ -34,6 +34,7 @@ import (
 )
 
 var errManagedSessionBusy = errors.New("managed session is busy")
+var errInvalidPinnedAgentVersion = errors.New("agent version is unavailable")
 
 func (s *Server) registerInternal(r gin.IRouter) {
 	r.GET("/api/internal/sessions", s.internalListSessions)
@@ -242,6 +243,7 @@ func (s *Server) internalResolveSession(c *gin.Context) {
 type findOrCreateReq struct {
 	OwnerID       string `json:"ownerId"`
 	AgentID       string `json:"agentId"`
+	AgentVersion  *int   `json:"agentVersion"`
 	EnvironmentID string `json:"environmentId"`
 	ExternalKey   string `json:"externalKey"`
 }
@@ -348,10 +350,10 @@ func (s *Server) internalFindOrCreateSession(c *gin.Context) {
 		writeErr(c, http.StatusBadRequest, "ownerId, agentId required")
 		return
 	}
-	sess, err := s.FindOrCreateSession(c.Request.Context(), req.OwnerID, req.AgentID, req.EnvironmentID, req.ExternalKey)
+	sess, err := s.findOrCreateSessionWithVersion(c.Request.Context(), req.OwnerID, req.AgentID, req.EnvironmentID, req.ExternalKey, req.AgentVersion)
 	if err != nil {
 		status := environmentBindingHTTPStatus(err)
-		if strings.Contains(err.Error(), "agent not found") || strings.Contains(err.Error(), "no environment") {
+		if strings.Contains(err.Error(), "agent not found") || strings.Contains(err.Error(), "no environment") || errors.Is(err, errInvalidPinnedAgentVersion) {
 			status = http.StatusBadRequest
 		}
 		writeErr(c, status, err.Error())
@@ -363,9 +365,33 @@ func (s *Server) internalFindOrCreateSession(c *gin.Context) {
 // FindOrCreateSession is the in-process form of POST /api/internal/sessions/find-or-create.
 // Empty environmentID resolves via agent default / latest deployment / first owner env.
 func (s *Server) FindOrCreateSession(ctx context.Context, ownerID, agentID, environmentID, externalKey string) (sessionRow, error) {
+	return s.findOrCreateSessionWithVersion(ctx, ownerID, agentID, environmentID, externalKey, nil)
+}
+
+// findOrCreateSessionWithVersion pins a deployment trigger to its validated immutable version.
+// Other internal callers retain the original latest-version behavior through the wrapper above.
+func (s *Server) findOrCreateSessionWithVersion(ctx context.Context, ownerID, agentID, environmentID, externalKey string, pinnedVersion *int) (sessionRow, error) {
 	a, err := s.loadAgent(ctx, ownerID, agentID)
 	if err != nil {
 		return sessionRow{}, fmt.Errorf("agent not found")
+	}
+	version := a.HeadVersion
+	refType := "latest"
+	if pinnedVersion != nil {
+		if *pinnedVersion <= 0 {
+			return sessionRow{}, errInvalidPinnedAgentVersion
+		}
+		var exists bool
+		if err := s.db.Pool.QueryRow(ctx,
+			`SELECT EXISTS(SELECT 1 FROM agent_versions WHERE owner_id=$1 AND agent_id=$2 AND version=$3)`,
+			ownerID, agentID, *pinnedVersion).Scan(&exists); err != nil {
+			return sessionRow{}, err
+		}
+		if !exists {
+			return sessionRow{}, errInvalidPinnedAgentVersion
+		}
+		version = *pinnedVersion
+		refType = "version"
 	}
 	envID := strings.TrimSpace(environmentID)
 	if envID == "" {
@@ -386,12 +412,22 @@ func (s *Server) FindOrCreateSession(ctx context.Context, ownerID, agentID, envi
 			   AND archived_at IS NULL ORDER BY created_at DESC LIMIT 1`,
 			ownerID, agentID, envID, externalKey).Scan(&id)
 		if err == nil {
-			return s.loadSession(ctx, id)
+			session, loadErr := s.loadSession(ctx, id)
+			if loadErr != nil {
+				return sessionRow{}, loadErr
+			}
+			if pinnedVersion != nil && (session.AgentVersion == nil || *session.AgentVersion != version) {
+				return sessionRow{}, errInvalidPinnedAgentVersion
+			}
+			return session, nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return sessionRow{}, err
 		}
 	}
 	_, memIDs, vaultIDs := mergeSessionMounts(a, envID, nil, nil, false, false)
 	return s.insertSession(ctx, ownerID, agentID, ownerID,
-		a.HeadVersion, "latest", envID, externalKey, memIDs, vaultIDs, nil, nil)
+		version, refType, envID, externalKey, memIDs, vaultIDs, nil, nil)
 }
 
 // FindOrCreateSessionID returns the session selected by the runtime binding resolver.
