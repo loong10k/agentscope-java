@@ -1120,6 +1120,9 @@ func (s *Server) sessionMemory(next gin.HandlerFunc) gin.HandlerFunc {
 			writeErr(c, http.StatusNotFound, "session not found")
 			return
 		}
+		if !s.liveMemorySessionOwner(c, sess) {
+			return
+		}
 		storeID := c.Param("storeId")
 		bound := false
 		for _, id := range parseStringSlice(deref(sess.MemoryStoreIDsJSON)) {
@@ -1135,9 +1138,9 @@ func (s *Server) sessionMemory(next gin.HandlerFunc) gin.HandlerFunc {
 			writeErr(c, http.StatusNotFound, "memory store not found")
 			return
 		}
-		if c.Request.Method != http.MethodGet && sess.EnvironmentID != "" {
+		if sess.EnvironmentID != "" {
 			env, err := s.loadEnv(c.Request.Context(), sess.EnvironmentID)
-			if err != nil {
+			if err != nil || env.OwnerID != sess.OwnerID || env.ArchivedAt != nil {
 				writeErr(c, http.StatusConflict, "environment unavailable")
 				return
 			}
@@ -1145,9 +1148,16 @@ func (s *Server) sessionMemory(next gin.HandlerFunc) gin.HandlerFunc {
 				MemoryAccess map[string]string `json:"memoryAccess"`
 			}
 			if env.ConfigJSON != nil {
-				_ = json.Unmarshal([]byte(*env.ConfigJSON), &cfg)
+				if err := json.Unmarshal([]byte(*env.ConfigJSON), &cfg); err != nil {
+					writeErr(c, http.StatusConflict, "invalid environment configuration")
+					return
+				}
 			}
-			if cfg.MemoryAccess[storeID] == "read_only" {
+			if mode := cfg.MemoryAccess[storeID]; mode != "" && mode != "read_only" && mode != "read_write" {
+				writeErr(c, http.StatusConflict, "invalid environment memory access")
+				return
+			}
+			if c.Request.Method != http.MethodGet && cfg.MemoryAccess[storeID] == "read_only" {
 				writeErr(c, http.StatusForbidden, "memory store is mounted read_only")
 				return
 			}
@@ -1162,6 +1172,26 @@ func (s *Server) sessionMemory(next gin.HandlerFunc) gin.HandlerFunc {
 	}
 }
 
+// A session binding is usable only while both the session and its owner remain active.
+// Both the legacy Go document path and the Rust authority binding path call this guard.
+func (s *Server) liveMemorySessionOwner(c *gin.Context, sess sessionRow) bool {
+	if sess.ArchivedAt != nil {
+		writeErr(c, http.StatusForbidden, "session is archived")
+		return false
+	}
+	var disabled bool
+	if err := s.db.Pool.QueryRow(c.Request.Context(),
+		`SELECT disabled FROM users WHERE user_id=$1`, sess.OwnerID).Scan(&disabled); err != nil {
+		writeErr(c, http.StatusServiceUnavailable, "session owner unavailable")
+		return false
+	}
+	if disabled {
+		writeErr(c, http.StatusForbidden, "session owner is disabled")
+		return false
+	}
+	return true
+}
+
 // internalMemoryBinding checks only the live session and environment binding.
 // Rust validates the store itself against its authoritative memory database.
 // Keeping this endpoint independent of Go memory_stores lets newly created Rust
@@ -1172,18 +1202,7 @@ func (s *Server) internalMemoryBinding(c *gin.Context) {
 		writeErr(c, http.StatusNotFound, "session not found")
 		return
 	}
-	if sess.ArchivedAt != nil {
-		writeErr(c, http.StatusForbidden, "session is archived")
-		return
-	}
-	var disabled bool
-	if err := s.db.Pool.QueryRow(c.Request.Context(),
-		`SELECT disabled FROM users WHERE user_id=$1`, sess.OwnerID).Scan(&disabled); err != nil {
-		writeErr(c, http.StatusServiceUnavailable, "session owner unavailable")
-		return
-	}
-	if disabled {
-		writeErr(c, http.StatusForbidden, "session owner is disabled")
+	if !s.liveMemorySessionOwner(c, sess) {
 		return
 	}
 	storeID := c.Param("storeId")
@@ -1214,8 +1233,13 @@ func (s *Server) internalMemoryBinding(c *gin.Context) {
 				return
 			}
 		}
-		if cfg.MemoryAccess[storeID] == "read_only" {
+		switch cfg.MemoryAccess[storeID] {
+		case "", "read_write":
+		case "read_only":
 			access = "read_only"
+		default:
+			writeErr(c, http.StatusConflict, "invalid environment memory access")
+			return
 		}
 	}
 	c.JSON(http.StatusOK, gin.H{"ownerId": sess.OwnerID, "storeId": storeID, "accessMode": access})
