@@ -24,6 +24,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -39,6 +40,7 @@ var errInvalidPinnedAgentVersion = errors.New("agent version is unavailable")
 
 func (s *Server) registerInternal(r gin.IRouter) {
 	r.GET("/api/internal/database/topology/:key", s.internalDatabaseTopology)
+	r.GET("/api/internal/memory-authority", s.internalMemoryAuthority)
 	r.GET("/api/internal/sessions", s.internalListSessions)
 	r.GET("/api/internal/sessions/:id/resolve", s.internalResolveSession)
 	r.GET("/api/internal/sessions/:id/memory-stores/:storeId/binding", s.internalMemoryBinding)
@@ -57,6 +59,19 @@ func (s *Server) registerInternal(r gin.IRouter) {
 	r.POST("/api/internal/deployments/:id/fire", s.internalFireDeployment)
 	r.GET("/api/internal/channels/config", s.internalChannelsConfig)
 	r.POST("/api/internal/channels/runtime", s.internalChannelRuntimeReport)
+}
+
+// internalMemoryAuthority is the startup handshake used by the Rust memory
+// cutover gate. A Rust writer must not start while this Go process can write.
+func (s *Server) internalMemoryAuthority(c *gin.Context) {
+	authority := os.Getenv("AISTIO_MEMORY_AUTHORITY")
+	if authority != "rust" {
+		authority = "go"
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"authority":    authority,
+		"writesFrozen": authority == "rust" || os.Getenv("GO_WRITES_FROZEN") == "confirmed",
+	})
 }
 
 // internalDatabaseTopology answers whether the Rust caller holds a transaction
@@ -178,6 +193,12 @@ func (s *Server) internalResolveSession(c *gin.Context) {
 	memIDs := parseStringSlice(deref(sess.MemoryStoreIDsJSON))
 	mounts := []gin.H{}
 	for _, mid := range memIDs {
+		if os.Getenv("AISTIO_MEMORY_AUTHORITY") == "rust" {
+			// Rust replaces the placeholder name from its authoritative store row.
+			// Go retains only the live session binding after cutover.
+			mounts = append(mounts, gin.H{"storeId": mid, "name": mid})
+			continue
+		}
 		m, err := s.buildMemoryMount(c.Request.Context(), mid, sess.OwnerID)
 		if err != nil {
 			writeErr(c, http.StatusConflict, "Session memory store is unavailable")

@@ -20,8 +20,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -558,6 +561,12 @@ func (s *Server) bestEffortDeleteSessionEvents(ctx context.Context, sessionID, o
 
 func (s *Server) validateSessionResources(ctx context.Context, owner string, memoryIDs, vaultIDs []string) error {
 	for _, id := range memoryIDs {
+		if os.Getenv("AISTIO_MEMORY_AUTHORITY") == "rust" {
+			if err := s.validateRustMemoryMount(ctx, owner, id); err != nil {
+				return fmt.Errorf("memory store unavailable: %s: %w", id, err)
+			}
+			continue
+		}
 		if _, err := s.buildMemoryMount(ctx, id, owner); err != nil {
 			return fmt.Errorf("memory store unavailable: %s", id)
 		}
@@ -571,6 +580,41 @@ func (s *Server) validateSessionResources(ctx context.Context, owner string, mem
 		if !exists {
 			return fmt.Errorf("vault unavailable: %s", id)
 		}
+	}
+	return nil
+}
+
+// validateRustMemoryMount checks the authoritative Rust store during session
+// creation or update; Go continues to own only the session binding.
+func (s *Server) validateRustMemoryMount(ctx context.Context, owner, storeID string) error {
+	if s.cfg.DataURL == "" || s.cfg.InternalToken == "" {
+		return errors.New("Rust memory authority endpoint is not configured")
+	}
+	endpoint := strings.TrimRight(s.cfg.DataURL, "/") + "/api/internal/memory-stores/" +
+		url.PathEscape(storeID) + "/mount?ownerId=" + url.QueryEscape(owner)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("X-Builder-Internal-Token", s.cfg.InternalToken)
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("Rust memory authority rejected mount: HTTP %d", resp.StatusCode)
+	}
+	var mount struct {
+		StoreID string `json:"storeId"`
+		Name    string `json:"name"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&mount); err != nil {
+		return err
+	}
+	if mount.StoreID != storeID || mount.Name == "" {
+		return errors.New("invalid Rust memory mount response")
 	}
 	return nil
 }
