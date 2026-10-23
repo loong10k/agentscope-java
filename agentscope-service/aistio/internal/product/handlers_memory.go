@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -41,6 +42,24 @@ func (s *Server) registerMemory(r gin.IRouter) {
 
 const memoryVersionsPrefix = "versions/"
 
+// memoryWritesFrozen prevents direct Go Web and internal-session writes during
+// the source freeze and after Rust becomes the sole memory writer.
+func memoryWritesFrozen(c *gin.Context) bool {
+	if os.Getenv("GO_WRITES_FROZEN") != "confirmed" && os.Getenv("AISTIO_MEMORY_AUTHORITY") != "rust" {
+		return false
+	}
+	c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "memory writes frozen for Rust authority cutover"})
+	return true
+}
+
+func memoryReadsUnavailable(c *gin.Context) bool {
+	if os.Getenv("AISTIO_MEMORY_AUTHORITY") != "rust" {
+		return false
+	}
+	c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "memory reads moved to Rust authority"})
+	return true
+}
+
 // readMemory serves both the memory content and, under the `versions/`
 // prefix, its version history.
 func (s *Server) readMemory(c *gin.Context) {
@@ -62,6 +81,9 @@ func memoryPath(c *gin.Context) string {
 }
 
 func (s *Server) listMemoryStores(c *gin.Context) {
+	if memoryReadsUnavailable(c) {
+		return
+	}
 	owner := currentResourceOwner(c)
 	restricted, allowedIDs := resourceFilter(c)
 	limit, offset, ok := pageParams(c)
@@ -108,6 +130,9 @@ func (s *Server) listMemoryStores(c *gin.Context) {
 }
 
 func (s *Server) createMemoryStore(c *gin.Context) {
+	if memoryWritesFrozen(c) {
+		return
+	}
 	var req memStoreReq
 	if err := c.ShouldBindJSON(&req); err != nil || req.Name == "" {
 		writeTextErr(c, http.StatusBadRequest, "name required")
@@ -130,6 +155,9 @@ func (s *Server) createMemoryStore(c *gin.Context) {
 }
 
 func (s *Server) getMemoryStore(c *gin.Context) {
+	if memoryReadsUnavailable(c) {
+		return
+	}
 	out, err := s.loadMemoryStore(c.Request.Context(), c.Param("id"), currentResourceOwner(c))
 	if err != nil {
 		writeErr(c, http.StatusNotFound, "memory store not found")
@@ -159,6 +187,9 @@ func (s *Server) loadMemoryStore(ctx context.Context, id, owner string) (gin.H, 
 }
 
 func (s *Server) archiveMemoryStore(c *gin.Context) {
+	if memoryWritesFrozen(c) {
+		return
+	}
 	owner := currentResourceOwner(c)
 	id := c.Param("id")
 	now := nowMillis()
@@ -179,6 +210,9 @@ func (s *Server) archiveMemoryStore(c *gin.Context) {
 
 // redactMemory irreversibly replaces memory content and clears version history.
 func (s *Server) redactMemory(c *gin.Context) {
+	if memoryWritesFrozen(c) {
+		return
+	}
 	storeID := c.Param("id")
 	if !s.ownStore(c, storeID) {
 		writeErr(c, http.StatusNotFound, "not found")
@@ -222,6 +256,9 @@ func (s *Server) redactMemory(c *gin.Context) {
 }
 
 func (s *Server) deleteMemoryStore(c *gin.Context) {
+	if memoryWritesFrozen(c) {
+		return
+	}
 	owner := currentResourceOwner(c)
 	id := c.Param("id")
 	tag, err := s.db.Pool.Exec(c.Request.Context(),
@@ -246,6 +283,9 @@ func (s *Server) ownStore(c *gin.Context, storeID string) bool {
 }
 
 func (s *Server) listMemories(c *gin.Context) {
+	if memoryReadsUnavailable(c) {
+		return
+	}
 	storeID := c.Param("id")
 	if !s.ownStore(c, storeID) {
 		writeErr(c, http.StatusNotFound, "memory store not found")
@@ -277,6 +317,9 @@ func (s *Server) listMemories(c *gin.Context) {
 }
 
 func (s *Server) getMemory(c *gin.Context) {
+	if memoryReadsUnavailable(c) {
+		return
+	}
 	storeID := c.Param("id")
 	path := memoryPath(c)
 	if !s.ownStore(c, storeID) {
@@ -313,6 +356,9 @@ type putMemoryReq struct {
 }
 
 func (s *Server) putMemory(c *gin.Context) {
+	if memoryWritesFrozen(c) {
+		return
+	}
 	storeID := c.Param("id")
 	path := memoryPath(c)
 	if !s.ownStore(c, storeID) {
@@ -380,6 +426,9 @@ func (s *Server) putMemory(c *gin.Context) {
 }
 
 func (s *Server) deleteMemory(c *gin.Context) {
+	if memoryWritesFrozen(c) {
+		return
+	}
 	storeID := c.Param("id")
 	path := memoryPath(c)
 	if !s.ownStore(c, storeID) {
@@ -399,6 +448,9 @@ func (s *Server) deleteMemory(c *gin.Context) {
 }
 
 func (s *Server) listMemoryVersions(c *gin.Context) {
+	if memoryReadsUnavailable(c) {
+		return
+	}
 	storeID := c.Param("id")
 	path := strings.TrimPrefix(memoryPath(c), memoryVersionsPrefix)
 	if !s.ownStore(c, storeID) {
