@@ -199,6 +199,54 @@ CREATE TABLE IF NOT EXISTS resource_shares (
     UNIQUE (resource_type, resource_id, grantee_user_id)
 );
 
+-- A row lock makes the cutover transaction wait for in-flight memory writes.
+-- Once the fence commits, even a request that passed an earlier HTTP guard
+-- cannot mutate the Go source tables. Non-memory shares remain usable.
+CREATE OR REPLACE FUNCTION cp.require_go_memory_authority() RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE
+    current_authority TEXT;
+BEGIN
+    IF TG_TABLE_NAME = 'resource_shares' THEN
+        IF TG_OP = 'INSERT' THEN
+            IF NEW.resource_type NOT IN ('memory', 'memory_store') THEN
+                RETURN NEW;
+            END IF;
+        ELSIF TG_OP = 'DELETE' THEN
+            IF OLD.resource_type NOT IN ('memory', 'memory_store') THEN
+                RETURN OLD;
+            END IF;
+        ELSE
+            IF OLD.resource_type NOT IN ('memory', 'memory_store')
+                AND NEW.resource_type NOT IN ('memory', 'memory_store') THEN
+                RETURN NEW;
+            END IF;
+        END IF;
+    END IF;
+    SELECT authority INTO current_authority
+        FROM cp.memory_authority_fence WHERE singleton=true FOR SHARE;
+    IF current_authority IS DISTINCT FROM 'go' THEN
+        RAISE EXCEPTION 'Go memory source is fenced for Rust authority' USING ERRCODE = '55000';
+    END IF;
+    IF TG_OP = 'DELETE' THEN
+        RETURN OLD;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+DROP TRIGGER IF EXISTS memory_authority_write_guard ON memory_stores;
+CREATE TRIGGER memory_authority_write_guard BEFORE INSERT OR UPDATE OR DELETE ON memory_stores
+    FOR EACH ROW EXECUTE FUNCTION cp.require_go_memory_authority();
+DROP TRIGGER IF EXISTS memory_authority_write_guard ON memories;
+CREATE TRIGGER memory_authority_write_guard BEFORE INSERT OR UPDATE OR DELETE ON memories
+    FOR EACH ROW EXECUTE FUNCTION cp.require_go_memory_authority();
+DROP TRIGGER IF EXISTS memory_authority_write_guard ON memory_versions;
+CREATE TRIGGER memory_authority_write_guard BEFORE INSERT OR UPDATE OR DELETE ON memory_versions
+    FOR EACH ROW EXECUTE FUNCTION cp.require_go_memory_authority();
+DROP TRIGGER IF EXISTS memory_authority_write_guard ON resource_shares;
+CREATE TRIGGER memory_authority_write_guard BEFORE INSERT OR UPDATE OR DELETE ON resource_shares
+    FOR EACH ROW EXECUTE FUNCTION cp.require_go_memory_authority();
+
 CREATE TABLE IF NOT EXISTS channels (
     channel_id       TEXT PRIMARY KEY,
     owner_id         TEXT NOT NULL,
