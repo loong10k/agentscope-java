@@ -354,6 +354,10 @@ func TestChannelDeliveryExpiredLeaseRequiresManualReconciliation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	activity := f.request(t, "GET", "/api/channels/"+f.ch.ChannelID+"/activity", nil, f.user)
+	if activity.Code != 200 || !strings.Contains(activity.Body.String(), `"state":"uncertain"`) {
+		t.Fatalf("expired submission not visible for reconciliation: %d %s", activity.Code, activity.Body.String())
+	}
 	claim := f.request(t, "POST", "/api/internal/channels/deliveries/claim", map[string]any{}, "")
 	if claim.Code != 204 {
 		t.Fatalf("expired submission was re-claimed: %d %s", claim.Code, claim.Body.String())
@@ -405,6 +409,26 @@ func TestChannelDeliveryExpiredLeaseRequiresManualReconciliation(t *testing.T) {
 	if err = f.s.db.Pool.QueryRow(ctx, `SELECT state,attempts FROM channel_deliveries WHERE id=$1`, second).
 		Scan(&state, &attempts); err != nil || state != "pending" || attempts != 0 {
 		t.Fatalf("manual requeue state: %s %d %v", state, attempts, err)
+	}
+
+	// A missing worker must not block an owner from reconciling an expired submission.
+	third := uuid.New()
+	_, err = f.s.db.Pool.Exec(ctx, `INSERT INTO channel_deliveries(id,channel_id,address_key,address,user_id,event_key,text,state,attempts,lease_token,next_attempt)
+	 VALUES($1,$2,'test-address',$3::jsonb,$4,$5,'reply','submitted',1,'offline-lease',now()-interval '1 second')`,
+		third, f.ch.ChannelID, mustJSON(f.in), f.user, "test:"+third.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	thirdPath := "/api/channels/" + f.ch.ChannelID + "/deliveries/" + third.String() + "/reconcile"
+	response = f.request(t, "POST", thirdPath, map[string]any{
+		"decision": "notDelivered", "evidence": "provider history checked while worker was offline",
+	}, f.user)
+	if response.Code != 204 {
+		t.Fatalf("offline manual requeue: %d %s", response.Code, response.Body.String())
+	}
+	if err = f.s.db.Pool.QueryRow(ctx, `SELECT state,attempts FROM channel_deliveries WHERE id=$1`, third).
+		Scan(&state, &attempts); err != nil || state != "pending" || attempts != 0 {
+		t.Fatalf("offline manual requeue state: %s %d %v", state, attempts, err)
 	}
 }
 

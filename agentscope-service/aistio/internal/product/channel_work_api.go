@@ -411,7 +411,10 @@ func (s *Server) channelWorkActivity(c *gin.Context) {
 	}
 	rows.Close()
 	deliveries := []gin.H{}
-	rows, e = s.db.Pool.Query(ctx, `SELECT id,issue_id,state,attempts,provider_message_id,last_error,created_at FROM channel_deliveries WHERE channel_id=$1 AND user_id=$2 ORDER BY created_at DESC LIMIT 100`, ch.ChannelID, user)
+	rows, e = s.db.Pool.Query(ctx, `SELECT id,issue_id,
+ CASE WHEN state='submitted' AND next_attempt<=now() THEN 'uncertain' ELSE state END AS visible_state,
+ attempts,provider_message_id,last_error,resolution_evidence,resolved_by,resolved_at,created_at
+ FROM channel_deliveries WHERE channel_id=$1 AND user_id=$2 ORDER BY created_at DESC LIMIT 100`, ch.ChannelID, user)
 	if e != nil {
 		writeErr(c, 500, "cannot read deliveries")
 		return
@@ -419,10 +422,10 @@ func (s *Server) channelWorkActivity(c *gin.Context) {
 	for rows.Next() {
 		var id uuid.UUID
 		var issue *uuid.UUID
-		var state, provider, errText string
+		var state, provider, errText, evidence, resolvedBy string
 		var attempts int
-		var created any
-		if rows.Scan(&id, &issue, &state, &attempts, &provider, &errText, &created) != nil {
+		var created, resolvedAt any
+		if rows.Scan(&id, &issue, &state, &attempts, &provider, &errText, &evidence, &resolvedBy, &resolvedAt, &created) != nil {
 			continue
 		}
 		if issue != nil {
@@ -430,7 +433,7 @@ func (s *Server) channelWorkActivity(c *gin.Context) {
 				continue
 			}
 		}
-		deliveries = append(deliveries, gin.H{"id": id, "issueId": issue, "state": state, "attempts": attempts, "providerMessageId": provider, "lastError": errText, "createdAt": created})
+		deliveries = append(deliveries, gin.H{"id": id, "issueId": issue, "state": state, "attempts": attempts, "providerMessageId": provider, "lastError": errText, "resolutionEvidence": evidence, "resolvedBy": resolvedBy, "resolvedAt": resolvedAt, "createdAt": created})
 	}
 	rows.Close()
 	links := []gin.H{}
@@ -523,7 +526,8 @@ func (s *Server) reconcileChannelDelivery(c *gin.Context) {
 	 provider_message_id=$5,last_error='',lease_token='',attempts=CASE WHEN $4='pending' THEN 0 ELSE attempts END,
 	 next_attempt=CASE WHEN $4='pending' THEN now() ELSE next_attempt END,
 	 resolution_evidence=$6,resolved_by=$3,resolved_at=now(),updated_at=now()
-	 WHERE id=$1 AND channel_id=$2 AND user_id=$3 AND state='uncertain'`,
+	 WHERE id=$1 AND channel_id=$2 AND user_id=$3
+   AND (state='uncertain' OR (state='submitted' AND next_attempt<=now()))`,
 		id, ch.ChannelID, currentUserID(c), state, req.ProviderMessageID, strings.TrimSpace(req.Evidence))
 	if err != nil {
 		writeErr(c, 503, "cannot reconcile delivery")
