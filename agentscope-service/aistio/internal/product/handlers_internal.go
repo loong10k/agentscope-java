@@ -687,6 +687,10 @@ func (s *Server) internalPatchSessionRuntime(c *gin.Context) {
 		writeErr(c, http.StatusNotFound, "session not found")
 		return
 	}
+	if sess.ArchivedAt != nil {
+		writeErr(c, http.StatusConflict, "session is archived")
+		return
+	}
 	fence := req.ManagedRuntimeFence
 	managed := false
 	if s.managedRuntimeValidator != nil {
@@ -722,14 +726,14 @@ func (s *Server) internalPatchSessionRuntime(c *gin.Context) {
 		err = tx.QueryRow(c.Request.Context(), `UPDATE sessions SET status=$1, stop_reason_json=$2,
 			runtime_agent_task_id=$3,runtime_attempt_id=$4,runtime_dispatch_generation=$5,
 			runtime_turn_id=$6,version=version+1,updated_at=$7
-			WHERE session_id=$8 AND (runtime_dispatch_generation IS NULL OR
+			WHERE session_id=$8 AND archived_at IS NULL AND (runtime_dispatch_generation IS NULL OR
 				runtime_dispatch_generation<$5 OR (runtime_dispatch_generation=$5 AND
 				runtime_agent_task_id=$3 AND runtime_attempt_id=$4 AND runtime_turn_id=$6))
 			RETURNING version`, status, stop, fence.AgentTaskID, fence.AttemptID,
 			fence.DispatchGeneration, fence.TurnID, now, sess.SessionID).Scan(&updatedVersion)
 	} else {
 		err = tx.QueryRow(c.Request.Context(), `UPDATE sessions SET status=$1, stop_reason_json=$2,
-			version=version+1,updated_at=$3 WHERE session_id=$4 AND runtime_dispatch_generation IS NULL
+			version=version+1,updated_at=$3 WHERE session_id=$4 AND archived_at IS NULL AND runtime_dispatch_generation IS NULL
 			RETURNING version`, status, stop, now, sess.SessionID).Scan(&updatedVersion)
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
