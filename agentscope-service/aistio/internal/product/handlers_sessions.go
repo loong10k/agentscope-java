@@ -560,8 +560,12 @@ func (s *Server) bestEffortDeleteSessionEvents(ctx context.Context, sessionID, o
 }
 
 func (s *Server) validateSessionResources(ctx context.Context, owner string, memoryIDs, vaultIDs []string) error {
+	fenced, err := s.memoryAuthorityFenced(ctx)
+	if err != nil {
+		return fmt.Errorf("memory authority fence unavailable: %w", err)
+	}
 	for _, id := range memoryIDs {
-		if os.Getenv("AISTIO_MEMORY_AUTHORITY") == "rust" {
+		if fenced || os.Getenv("AISTIO_MEMORY_AUTHORITY") == "rust" {
 			if err := s.validateRustMemoryMount(ctx, owner, id); err != nil {
 				return fmt.Errorf("memory store unavailable: %s: %w", id, err)
 			}

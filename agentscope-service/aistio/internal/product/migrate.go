@@ -24,6 +24,16 @@ const migrationSQL = `
 CREATE SCHEMA IF NOT EXISTS cp;
 SET search_path TO cp;
 
+CREATE TABLE IF NOT EXISTS memory_authority_fence (
+    singleton BOOLEAN PRIMARY KEY DEFAULT true CHECK (singleton),
+    authority TEXT NOT NULL DEFAULT 'go' CHECK (authority IN ('go','rust')),
+    data_sha256 TEXT,
+    activated_at TIMESTAMPTZ,
+    activated_by TEXT
+);
+INSERT INTO memory_authority_fence(singleton,authority)
+VALUES(true,'go') ON CONFLICT(singleton) DO NOTHING;
+
 CREATE TABLE IF NOT EXISTS users (
     user_id       TEXT PRIMARY KEY,
     username      TEXT NOT NULL UNIQUE,

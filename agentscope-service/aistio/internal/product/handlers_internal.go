@@ -17,6 +17,7 @@ package product
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -41,6 +42,7 @@ var errInvalidPinnedAgentVersion = errors.New("agent version is unavailable")
 func (s *Server) registerInternal(r gin.IRouter) {
 	r.GET("/api/internal/database/topology/:key", s.internalDatabaseTopology)
 	r.GET("/api/internal/memory-authority", s.internalMemoryAuthority)
+	r.POST("/api/internal/memory-authority/fence", s.internalFenceMemoryAuthority)
 	r.GET("/api/internal/sessions", s.internalListSessions)
 	r.GET("/api/internal/sessions/:id/resolve", s.internalResolveSession)
 	r.GET("/api/internal/sessions/:id/memory-stores/:storeId/binding", s.internalMemoryBinding)
@@ -64,14 +66,78 @@ func (s *Server) registerInternal(r gin.IRouter) {
 // internalMemoryAuthority is the startup handshake used by the Rust memory
 // cutover gate. A Rust writer must not start while this Go process can write.
 func (s *Server) internalMemoryAuthority(c *gin.Context) {
-	authority := os.Getenv("AISTIO_MEMORY_AUTHORITY")
-	if authority != "rust" {
-		authority = "go"
+	var persisted string
+	var digest *string
+	if err := s.db.Pool.QueryRow(c.Request.Context(),
+		`SELECT authority,data_sha256 FROM cp.memory_authority_fence WHERE singleton=true`).Scan(&persisted, &digest); err != nil {
+		writeErr(c, http.StatusServiceUnavailable, "memory authority fence unavailable")
+		return
+	}
+	fenced := persisted == "rust"
+	configured := os.Getenv("AISTIO_MEMORY_AUTHORITY") == "rust"
+	authority := "go"
+	if fenced && configured {
+		authority = "rust"
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"authority":    authority,
-		"writesFrozen": authority == "rust" || os.Getenv("GO_WRITES_FROZEN") == "confirmed",
+		"fenced":       fenced,
+		"dataSha256":   digest,
+		"writesFrozen": fenced || configured || os.Getenv("GO_WRITES_FROZEN") == "confirmed",
 	})
+}
+
+// internalFenceMemoryAuthority durably prevents Go from writing after a
+// verified Rust cutover. The caller must first freeze and drain Go writers.
+func (s *Server) internalFenceMemoryAuthority(c *gin.Context) {
+	if os.Getenv("GO_WRITES_FROZEN") != "confirmed" || os.Getenv("AISTIO_MEMORY_AUTHORITY") != "rust" {
+		writeErr(c, http.StatusConflict, "Go memory writes must be frozen and Rust authority configured")
+		return
+	}
+	var req struct {
+		DataSha256 string `json:"dataSha256"`
+		ApprovedBy string `json:"approvedBy"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || len(req.DataSha256) != 64 || strings.TrimSpace(req.ApprovedBy) == "" {
+		writeErr(c, http.StatusBadRequest, "dataSha256 and approvedBy are required")
+		return
+	}
+	if _, err := hex.DecodeString(req.DataSha256); err != nil {
+		writeErr(c, http.StatusBadRequest, "invalid dataSha256")
+		return
+	}
+	tx, err := s.db.Pool.Begin(c.Request.Context())
+	if err != nil {
+		writeErr(c, http.StatusServiceUnavailable, "memory authority fence unavailable")
+		return
+	}
+	defer tx.Rollback(c.Request.Context())
+	var authority string
+	var digest *string
+	if err := tx.QueryRow(c.Request.Context(),
+		`SELECT authority,data_sha256 FROM cp.memory_authority_fence WHERE singleton=true FOR UPDATE`).Scan(&authority, &digest); err != nil {
+		writeErr(c, http.StatusServiceUnavailable, "memory authority fence unavailable")
+		return
+	}
+	if authority == "rust" {
+		if digest == nil || *digest != req.DataSha256 {
+			writeErr(c, http.StatusConflict, "memory authority fence digest differs")
+			return
+		}
+	} else {
+		_, err = tx.Exec(c.Request.Context(),
+			`UPDATE cp.memory_authority_fence SET authority='rust',data_sha256=$1,activated_at=now(),activated_by=$2 WHERE singleton=true`,
+			req.DataSha256, req.ApprovedBy)
+		if err != nil {
+			writeErr(c, http.StatusServiceUnavailable, "memory authority fence unavailable")
+			return
+		}
+	}
+	if err := tx.Commit(c.Request.Context()); err != nil {
+		writeErr(c, http.StatusServiceUnavailable, "memory authority fence unavailable")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"authority": "rust", "fenced": true, "dataSha256": req.DataSha256})
 }
 
 // internalDatabaseTopology answers whether the Rust caller holds a transaction
@@ -192,8 +258,13 @@ func (s *Server) internalResolveSession(c *gin.Context) {
 
 	memIDs := parseStringSlice(deref(sess.MemoryStoreIDsJSON))
 	mounts := []gin.H{}
+	fenced, fenceErr := s.memoryAuthorityFenced(c.Request.Context())
+	if fenceErr != nil {
+		writeErr(c, http.StatusServiceUnavailable, "memory authority fence unavailable")
+		return
+	}
 	for _, mid := range memIDs {
-		if os.Getenv("AISTIO_MEMORY_AUTHORITY") == "rust" {
+		if fenced || os.Getenv("AISTIO_MEMORY_AUTHORITY") == "rust" {
 			// Rust replaces the placeholder name from its authoritative store row.
 			// Go retains only the live session binding after cutover.
 			mounts = append(mounts, gin.H{"storeId": mid, "name": mid})
@@ -1020,6 +1091,9 @@ func (s *Server) buildMemoryMount(ctx context.Context, storeID, ownerID string) 
 }
 
 func (s *Server) internalMemoryMount(c *gin.Context) {
+	if s.memoryReadsUnavailable(c) {
+		return
+	}
 	m, err := s.buildMemoryMount(c.Request.Context(), c.Param("id"), currentUserID(c))
 	if err != nil {
 		writeErr(c, http.StatusNotFound, "memory store not found")
@@ -1032,6 +1106,9 @@ func (s *Server) internalMemoryMount(c *gin.Context) {
 // by a cached Brain. Internal transport authentication is applied before this handler.
 func (s *Server) sessionMemory(next gin.HandlerFunc) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if s.memoryReadsUnavailable(c) {
+			return
+		}
 		sess, err := s.loadSession(c.Request.Context(), c.Param("id"))
 		if err != nil {
 			writeErr(c, http.StatusNotFound, "session not found")

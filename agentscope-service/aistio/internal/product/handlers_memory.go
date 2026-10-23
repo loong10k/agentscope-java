@@ -42,18 +42,40 @@ func (s *Server) registerMemory(r gin.IRouter) {
 
 const memoryVersionsPrefix = "versions/"
 
+// memoryAuthorityFenced reads the durable source-side cutover marker. Failure
+// must not reopen Go writes or serve stale reads after a restart.
+func (s *Server) memoryAuthorityFenced(ctx context.Context) (bool, error) {
+	var authority string
+	err := s.db.Pool.QueryRow(ctx,
+		`SELECT authority FROM cp.memory_authority_fence WHERE singleton=true`).Scan(&authority)
+	if err != nil {
+		return false, err
+	}
+	return authority == "rust", nil
+}
+
 // memoryWritesFrozen prevents direct Go Web and internal-session writes during
 // the source freeze and after Rust becomes the sole memory writer.
-func memoryWritesFrozen(c *gin.Context) bool {
-	if os.Getenv("GO_WRITES_FROZEN") != "confirmed" && os.Getenv("AISTIO_MEMORY_AUTHORITY") != "rust" {
+func (s *Server) memoryWritesFrozen(c *gin.Context) bool {
+	fenced, err := s.memoryAuthorityFenced(c.Request.Context())
+	if err != nil {
+		c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "memory authority fence unavailable"})
+		return true
+	}
+	if !fenced && os.Getenv("GO_WRITES_FROZEN") != "confirmed" && os.Getenv("AISTIO_MEMORY_AUTHORITY") != "rust" {
 		return false
 	}
 	c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "memory writes frozen for Rust authority cutover"})
 	return true
 }
 
-func memoryReadsUnavailable(c *gin.Context) bool {
-	if os.Getenv("AISTIO_MEMORY_AUTHORITY") != "rust" {
+func (s *Server) memoryReadsUnavailable(c *gin.Context) bool {
+	fenced, err := s.memoryAuthorityFenced(c.Request.Context())
+	if err != nil {
+		c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "memory authority fence unavailable"})
+		return true
+	}
+	if !fenced && os.Getenv("AISTIO_MEMORY_AUTHORITY") != "rust" {
 		return false
 	}
 	c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "memory reads moved to Rust authority"})
@@ -81,7 +103,7 @@ func memoryPath(c *gin.Context) string {
 }
 
 func (s *Server) listMemoryStores(c *gin.Context) {
-	if memoryReadsUnavailable(c) {
+	if s.memoryReadsUnavailable(c) {
 		return
 	}
 	owner := currentResourceOwner(c)
@@ -130,7 +152,7 @@ func (s *Server) listMemoryStores(c *gin.Context) {
 }
 
 func (s *Server) createMemoryStore(c *gin.Context) {
-	if memoryWritesFrozen(c) {
+	if s.memoryWritesFrozen(c) {
 		return
 	}
 	var req memStoreReq
@@ -155,7 +177,7 @@ func (s *Server) createMemoryStore(c *gin.Context) {
 }
 
 func (s *Server) getMemoryStore(c *gin.Context) {
-	if memoryReadsUnavailable(c) {
+	if s.memoryReadsUnavailable(c) {
 		return
 	}
 	out, err := s.loadMemoryStore(c.Request.Context(), c.Param("id"), currentResourceOwner(c))
@@ -187,7 +209,7 @@ func (s *Server) loadMemoryStore(ctx context.Context, id, owner string) (gin.H, 
 }
 
 func (s *Server) archiveMemoryStore(c *gin.Context) {
-	if memoryWritesFrozen(c) {
+	if s.memoryWritesFrozen(c) {
 		return
 	}
 	owner := currentResourceOwner(c)
@@ -210,7 +232,7 @@ func (s *Server) archiveMemoryStore(c *gin.Context) {
 
 // redactMemory irreversibly replaces memory content and clears version history.
 func (s *Server) redactMemory(c *gin.Context) {
-	if memoryWritesFrozen(c) {
+	if s.memoryWritesFrozen(c) {
 		return
 	}
 	storeID := c.Param("id")
@@ -256,7 +278,7 @@ func (s *Server) redactMemory(c *gin.Context) {
 }
 
 func (s *Server) deleteMemoryStore(c *gin.Context) {
-	if memoryWritesFrozen(c) {
+	if s.memoryWritesFrozen(c) {
 		return
 	}
 	owner := currentResourceOwner(c)
@@ -283,7 +305,7 @@ func (s *Server) ownStore(c *gin.Context, storeID string) bool {
 }
 
 func (s *Server) listMemories(c *gin.Context) {
-	if memoryReadsUnavailable(c) {
+	if s.memoryReadsUnavailable(c) {
 		return
 	}
 	storeID := c.Param("id")
@@ -317,7 +339,7 @@ func (s *Server) listMemories(c *gin.Context) {
 }
 
 func (s *Server) getMemory(c *gin.Context) {
-	if memoryReadsUnavailable(c) {
+	if s.memoryReadsUnavailable(c) {
 		return
 	}
 	storeID := c.Param("id")
@@ -356,7 +378,7 @@ type putMemoryReq struct {
 }
 
 func (s *Server) putMemory(c *gin.Context) {
-	if memoryWritesFrozen(c) {
+	if s.memoryWritesFrozen(c) {
 		return
 	}
 	storeID := c.Param("id")
@@ -426,7 +448,7 @@ func (s *Server) putMemory(c *gin.Context) {
 }
 
 func (s *Server) deleteMemory(c *gin.Context) {
-	if memoryWritesFrozen(c) {
+	if s.memoryWritesFrozen(c) {
 		return
 	}
 	storeID := c.Param("id")
@@ -448,7 +470,7 @@ func (s *Server) deleteMemory(c *gin.Context) {
 }
 
 func (s *Server) listMemoryVersions(c *gin.Context) {
-	if memoryReadsUnavailable(c) {
+	if s.memoryReadsUnavailable(c) {
 		return
 	}
 	storeID := c.Param("id")
