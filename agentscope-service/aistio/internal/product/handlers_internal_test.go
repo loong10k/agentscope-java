@@ -259,7 +259,7 @@ func TestPersonalRuntimePatchRequiresCurrentTurnLease(t *testing.T) {
 		t.Fatal(err)
 	}
 	var leaseTable *string
-	if err = db.Pool.QueryRow(ctx, `SELECT to_regclass('coord_leases')::text`).Scan(&leaseTable); err != nil {
+	if err = db.Pool.QueryRow(ctx, `SELECT to_regclass('public.coord_leases')::text`).Scan(&leaseTable); err != nil {
 		t.Fatal(err)
 	}
 	if leaseTable == nil {
@@ -274,10 +274,10 @@ func TestPersonalRuntimePatchRequiresCurrentTurnLease(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		_, _ = db.Pool.Exec(context.Background(), `DELETE FROM coord_leases WHERE lease_kind='turn' AND lease_key=$1`, sessionID)
+		_, _ = db.Pool.Exec(context.Background(), `DELETE FROM public.coord_leases WHERE lease_kind='turn' AND lease_key=$1`, sessionID)
 		_, _ = db.Pool.Exec(context.Background(), `DELETE FROM sessions WHERE session_id=$1`, sessionID)
 	})
-	if _, err = db.Pool.Exec(ctx, `INSERT INTO coord_leases
+	if _, err = db.Pool.Exec(ctx, `INSERT INTO public.coord_leases
 		(lease_kind,lease_key,owner_id,instance_id,acquired_at,expires_at,fence)
 		VALUES('turn',$1,$2,'old-turn',$3,$4,1)`, sessionID, ownerID, now, now+60_000); err != nil {
 		t.Fatal(err)
@@ -304,7 +304,7 @@ func TestPersonalRuntimePatchRequiresCurrentTurnLease(t *testing.T) {
 	if _, err = db.Pool.Exec(ctx, `UPDATE sessions SET status='running' WHERE session_id=$1`, sessionID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = db.Pool.Exec(ctx, `UPDATE coord_leases SET instance_id='new-turn',fence=2 WHERE lease_kind='turn' AND lease_key=$1`, sessionID); err != nil {
+	if _, err = db.Pool.Exec(ctx, `UPDATE public.coord_leases SET instance_id='new-turn',fence=2 WHERE lease_kind='turn' AND lease_key=$1`, sessionID); err != nil {
 		t.Fatal(err)
 	}
 	if response := patch("old-turn", 1); response.Code != http.StatusConflict {
@@ -329,7 +329,7 @@ func TestPersonalRuntimePatchRequiresCurrentTurnLease(t *testing.T) {
 	if _, err = db.Pool.Exec(ctx, `UPDATE sessions SET status='running' WHERE session_id=$1`, sessionID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = db.Pool.Exec(ctx, `UPDATE coord_leases SET expires_at=0 WHERE lease_kind='turn' AND lease_key=$1`, sessionID); err != nil {
+	if _, err = db.Pool.Exec(ctx, `UPDATE public.coord_leases SET expires_at=0 WHERE lease_kind='turn' AND lease_key=$1`, sessionID); err != nil {
 		t.Fatal(err)
 	}
 	if response := patch("new-turn", 2); response.Code != http.StatusConflict {

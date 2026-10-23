@@ -31,6 +31,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 var errManagedSessionBusy = errors.New("managed session is busy")
@@ -426,8 +427,31 @@ func (s *Server) findOrCreateSessionWithVersion(ctx context.Context, ownerID, ag
 		}
 	}
 	_, memIDs, vaultIDs := mergeSessionMounts(a, envID, nil, nil, false, false)
-	return s.insertSession(ctx, ownerID, agentID, ownerID,
+	session, err := s.insertSession(ctx, ownerID, agentID, ownerID,
 		version, refType, envID, externalKey, memIDs, vaultIDs, nil, nil)
+	if err == nil || externalKey == "" {
+		return session, err
+	}
+	var databaseError *pgconn.PgError
+	if !errors.As(err, &databaseError) || databaseError.Code != "23505" || databaseError.ConstraintName != "idx_sessions_deployment_external_unique" {
+		return sessionRow{}, err
+	}
+	// Another replica inserted the same durable trigger session first. The
+	// unique index makes the post-conflict lookup safe across process crashes.
+	var id string
+	if err := s.db.Pool.QueryRow(ctx,
+		`SELECT session_id FROM sessions WHERE owner_id=$1 AND agent_id=$2 AND environment_id=$3 AND external_key=$4 AND archived_at IS NULL`,
+		ownerID, agentID, envID, externalKey).Scan(&id); err != nil {
+		return sessionRow{}, err
+	}
+	session, err = s.loadSession(ctx, id)
+	if err != nil {
+		return sessionRow{}, err
+	}
+	if pinnedVersion != nil && (session.AgentVersion == nil || *session.AgentVersion != version) {
+		return sessionRow{}, errInvalidPinnedAgentVersion
+	}
+	return session, nil
 }
 
 // FindOrCreateSessionID returns the session selected by the runtime binding resolver.
@@ -760,10 +784,10 @@ func (s *Server) internalPatchSessionRuntime(c *gin.Context) {
 		return
 	}
 	if req.LeaseOwnerID != nil {
-		// sessions 与 coord_leases 必须位于同一 PostgreSQL 数据库。锁住当前租约行后，
+		// cp.sessions 与 public.coord_leases 必须位于同一 PostgreSQL 数据库。锁住当前租约行后，
 		// 新 turn 的 CAS 接管只能排在本事务之后；旧 fence 在接管先提交时会被拒绝。
 		var marker int
-		err = tx.QueryRow(c.Request.Context(), `SELECT 1 FROM coord_leases
+		err = tx.QueryRow(c.Request.Context(), `SELECT 1 FROM public.coord_leases
 			WHERE lease_kind='turn' AND lease_key=$1 AND owner_id=$2 AND instance_id=$3
 			AND fence=$4 AND expires_at>(extract(epoch from clock_timestamp())*1000)::bigint
 			FOR UPDATE`, sess.SessionID, sess.OwnerID, *req.LeaseOwnerID, *req.LeaseFence).Scan(&marker)
@@ -800,7 +824,7 @@ func (s *Server) internalPatchSessionRuntime(c *gin.Context) {
 		err = tx.QueryRow(c.Request.Context(), `UPDATE sessions SET status=$1, stop_reason_json=$2,
 			version=version+1,updated_at=$3 WHERE session_id=$4 AND archived_at IS NULL
 			AND runtime_dispatch_generation IS NULL AND EXISTS (
-				SELECT 1 FROM coord_leases WHERE lease_kind='turn' AND lease_key=$4 AND owner_id=$5
+				SELECT 1 FROM public.coord_leases WHERE lease_kind='turn' AND lease_key=$4 AND owner_id=$5
 				AND instance_id=$6 AND fence=$7
 				AND expires_at>(extract(epoch from clock_timestamp())*1000)::bigint)
 			RETURNING version`, status, stop, now, sess.SessionID, sess.OwnerID,

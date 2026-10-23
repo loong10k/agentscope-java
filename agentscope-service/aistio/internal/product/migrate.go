@@ -298,6 +298,15 @@ ALTER TABLE sessions ADD COLUMN IF NOT EXISTS runtime_agent_task_id TEXT;
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS runtime_attempt_id TEXT;
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS runtime_dispatch_generation BIGINT;
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS runtime_turn_id TEXT;
+
+-- Deployment trigger retries must resolve to one durable product session.
+-- Restrict uniqueness to the new trigger keys so historical user session keys
+-- retain their existing contract.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_deployment_external_unique
+    ON sessions (owner_id, agent_id, environment_id, external_key)
+    WHERE archived_at IS NULL AND (external_key LIKE 'webhook|%' OR external_key LIKE 'cron|%');
+CREATE INDEX IF NOT EXISTS idx_deployments_last_session
+    ON deployments (last_session_id) WHERE last_session_id IS NOT NULL;
 `
 
 func migrate(ctx context.Context, db *DB) error {
