@@ -132,6 +132,12 @@ func (s *Server) internalFenceMemoryAuthority(c *gin.Context) {
 			writeErr(c, http.StatusServiceUnavailable, "memory authority fence unavailable")
 			return
 		}
+		if _, err := tx.Exec(c.Request.Context(),
+			`INSERT INTO cp.memory_authority_fence_history(action,data_sha256,actor) VALUES('activate',$1,$2)`,
+			req.DataSha256, req.ApprovedBy); err != nil {
+			writeErr(c, http.StatusServiceUnavailable, "memory authority fence audit unavailable")
+			return
+		}
 	}
 	if err := tx.Commit(c.Request.Context()); err != nil {
 		writeErr(c, http.StatusServiceUnavailable, "memory authority fence unavailable")

@@ -33,6 +33,14 @@ CREATE TABLE IF NOT EXISTS memory_authority_fence (
 );
 INSERT INTO memory_authority_fence(singleton,authority)
 VALUES(true,'go') ON CONFLICT(singleton) DO NOTHING;
+CREATE TABLE IF NOT EXISTS memory_authority_fence_history (
+    id BIGSERIAL PRIMARY KEY,
+    action TEXT NOT NULL CHECK (action IN ('activate','abort')),
+    data_sha256 TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    reason TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 
 CREATE TABLE IF NOT EXISTS users (
     user_id       TEXT PRIMARY KEY,
