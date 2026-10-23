@@ -403,6 +403,7 @@ func (s *Server) registerRoutes() {
 		pg.Use(s.product.Middlewares()...)
 		pg.Use(s.productNamespaceMiddleware())
 		pg.Use(s.scopeMiddleware())
+		pg.GET("/api/internal/memory-scope", s.resolveMemoryScope)
 		s.product.Register(pg)
 	}
 	if s.store != nil {
