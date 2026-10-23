@@ -41,6 +41,7 @@ func (s *Server) registerInternal(r gin.IRouter) {
 	r.GET("/api/internal/database/topology/:key", s.internalDatabaseTopology)
 	r.GET("/api/internal/sessions", s.internalListSessions)
 	r.GET("/api/internal/sessions/:id/resolve", s.internalResolveSession)
+	r.GET("/api/internal/sessions/:id/memory-stores/:storeId/binding", s.internalMemoryBinding)
 	r.POST("/api/internal/sessions/find-or-create", s.internalFindOrCreateSession)
 	r.PATCH("/api/internal/sessions/:id/runtime", s.internalPatchSessionRuntime)
 	r.PATCH("/api/internal/sessions/:id/overrides", s.internalPatchSessionOverrides)
@@ -1055,6 +1056,51 @@ func (s *Server) sessionMemory(next gin.HandlerFunc) gin.HandlerFunc {
 		}
 		next(c)
 	}
+}
+
+// internalMemoryBinding checks only the live session and environment binding.
+// Rust validates the store itself against its authoritative memory database.
+// Keeping this endpoint independent of Go memory_stores lets newly created Rust
+// stores remain mountable after the authority cutover.
+func (s *Server) internalMemoryBinding(c *gin.Context) {
+	sess, err := s.loadSession(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		writeErr(c, http.StatusNotFound, "session not found")
+		return
+	}
+	storeID := c.Param("storeId")
+	bound := false
+	for _, id := range parseStringSlice(deref(sess.MemoryStoreIDsJSON)) {
+		if id == storeID {
+			bound = true
+			break
+		}
+	}
+	if !bound {
+		writeErr(c, http.StatusForbidden, "memory store is not bound to this session")
+		return
+	}
+	access := "read_write"
+	if sess.EnvironmentID != "" {
+		env, err := s.loadEnv(c.Request.Context(), sess.EnvironmentID)
+		if err != nil || env.OwnerID != sess.OwnerID || env.ArchivedAt != nil {
+			writeErr(c, http.StatusConflict, "environment unavailable")
+			return
+		}
+		var cfg struct {
+			MemoryAccess map[string]string `json:"memoryAccess"`
+		}
+		if env.ConfigJSON != nil {
+			if err := json.Unmarshal([]byte(*env.ConfigJSON), &cfg); err != nil {
+				writeErr(c, http.StatusConflict, "invalid environment configuration")
+				return
+			}
+		}
+		if cfg.MemoryAccess[storeID] == "read_only" {
+			access = "read_only"
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"ownerId": sess.OwnerID, "storeId": storeID, "accessMode": access})
 }
 
 func (s *Server) internalFireDeployment(c *gin.Context) {
