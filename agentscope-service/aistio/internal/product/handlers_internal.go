@@ -37,6 +37,9 @@ import (
 )
 
 var errManagedSessionBusy = errors.New("managed session is busy")
+
+// ErrManagedSessionManualReview 表示数据面已持久判定工具结果不确定，禁止自动重派。
+var ErrManagedSessionManualReview = errors.New("managed session requires manual review")
 var errInvalidPinnedAgentVersion = errors.New("agent version is unavailable")
 
 func (s *Server) registerInternal(r gin.IRouter) {
@@ -679,7 +682,16 @@ func (s *Server) postSessionWakePayload(ctx context.Context, sessionID, ownerID 
 			return requestErr
 		}
 		if resp.StatusCode == http.StatusConflict {
+			message, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 			_ = resp.Body.Close()
+			var problem struct {
+				Error struct {
+					Code string `json:"code"`
+				} `json:"error"`
+			}
+			if json.Unmarshal(message, &problem) == nil && problem.Error.Code == "manual_review_required" {
+				return fmt.Errorf("%w: %s", ErrManagedSessionManualReview, string(message))
+			}
 			select {
 			case <-ctx.Done():
 				return ctx.Err()

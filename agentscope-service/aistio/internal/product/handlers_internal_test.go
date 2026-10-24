@@ -62,6 +62,24 @@ func TestPostSessionWakeEventRetriesLeaseReleaseRace(t *testing.T) {
 	}
 }
 
+func TestPostSessionWakeEventStopsOnManualReviewConflict(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"type":"error","error":{"code":"manual_review_required","message":"HITL tool outcome requires manual review before another turn"}}`))
+	}))
+	t.Cleanup(server.Close)
+	s := &Server{cfg: Config{DataURL: server.URL, InternalToken: "internal-token"}}
+	if err := s.PostSessionWakeEvent(t.Context(), "session-a", "owner-a", "hello"); !errors.Is(err, ErrManagedSessionManualReview) {
+		t.Fatalf("manual review conflict: %v", err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("manual review wake calls=%d, want 1", got)
+	}
+}
+
 func TestPostManagedToolConfirmationUsesFencedInternalEndpoint(t *testing.T) {
 	approvalID, taskID, attemptID := uuid.New(), uuid.New(), uuid.New()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -304,6 +304,18 @@ func (r *Resolver) dispatchManaged(ctx context.Context, taskID uuid.UUID, candid
 	}
 	if err := r.Managed.PostSessionWakeEvent(ctx, sessionID, binding.ManagedOwnerRef,
 		wake); err != nil {
+		if errors.Is(err, product.ErrManagedSessionManualReview) {
+			// 已持久化的未知工具结果不能再自动重派；终止当前 Task/Attempt，
+			// 让操作者在审计中看到明确的人工核查原因。
+			_, _, failErr := r.Store.Collaboration().FailAgentTaskWithAttempt(ctx, task.ID, store.TaskFailure{
+				ExpectedVersion: dispatched.Version, AttemptID: attempt.ID,
+				DispatchGeneration: attempt.DispatchGeneration,
+				Code:               "managed_manual_review_required", Message: err.Error()})
+			if failErr != nil {
+				return nil, errors.Join(err, failErr)
+			}
+			return nil, err
+		}
 		_, _, _ = r.Store.Collaboration().RequeueAgentTaskAfterAttemptFailure(ctx, task.ID, store.TaskFailure{
 			ExpectedVersion: dispatched.Version, AttemptID: attempt.ID, DispatchGeneration: attempt.DispatchGeneration,
 			Code: "managed_wake_failed", Message: err.Error()})

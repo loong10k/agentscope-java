@@ -45,6 +45,7 @@ type managedRecorder struct {
 	abortOwner   string
 	order        []string
 	claimErr     error
+	wakeErr      error
 }
 
 func (m *managedRecorder) FindOrCreateSessionID(context.Context, string, string, string, string) (string, error) {
@@ -54,7 +55,7 @@ func (m *managedRecorder) FindOrCreateSessionID(context.Context, string, string,
 func (m *managedRecorder) PostSessionWakeEvent(_ context.Context, _ string, _ string, text string) error {
 	m.order = append(m.order, "wake")
 	m.wakes = append(m.wakes, text)
-	return nil
+	return m.wakeErr
 }
 
 func (m *managedRecorder) ClaimManagedRuntimeFence(_ context.Context, _ string,
@@ -209,6 +210,19 @@ func TestResolverDispatchesSameAgentTaskContractToEveryBackend(t *testing.T) {
 		requeued, getErr := st.Collaboration().GetAgentTask(ctx, failingTask.ID)
 		if getErr != nil || requeued.Status != controlmodel.AgentTaskQueued {
 			t.Fatalf("fence claim failure did not requeue task: task=%+v err=%v", requeued, getErr)
+		}
+
+		reviewTask := newTask(agent.ID.String())
+		reviewManaged := &managedRecorder{sessionID: "managed-session-review-required",
+			wakeErr: product.ErrManagedSessionManualReview}
+		reviewResolver := &Resolver{Store: st, Managed: reviewManaged, Tokens: tokens}
+		if result, dispatchErr := reviewResolver.Dispatch(ctx, reviewTask.ID, &runtimeBinding); result != nil || !errors.Is(dispatchErr, product.ErrManagedSessionManualReview) {
+			t.Fatalf("manual review dispatch result=%+v err=%v", result, dispatchErr)
+		}
+		failed, getErr := st.Collaboration().GetAgentTask(ctx, reviewTask.ID)
+		if getErr != nil || failed.Status != controlmodel.AgentTaskFailed ||
+			failed.ErrorCode != "managed_manual_review_required" {
+			t.Fatalf("manual review should stop automatic requeue: task=%+v err=%v", failed, getErr)
 		}
 	})
 
