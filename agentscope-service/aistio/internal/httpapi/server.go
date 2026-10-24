@@ -405,6 +405,7 @@ func (s *Server) registerRoutes() {
 		pg.Use(s.scopeMiddleware())
 		pg.GET("/api/internal/memory-scope", s.resolveMemoryScope)
 		s.router.GET("/api/internal/memory-workspaces", s.resolveMemoryWorkspaces)
+		s.router.GET("/api/internal/memory-workspace-target", s.resolveMemoryWorkspaceTarget)
 		s.product.Register(pg)
 	}
 	if s.store != nil {

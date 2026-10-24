@@ -119,3 +119,30 @@ func (s *Server) resolveMemoryWorkspaces(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"userId": user, "workspaces": workspaces})
 }
+
+// resolveMemoryWorkspaceTarget 在保存分享前确认目标是当前存在的共享空间。
+func (s *Server) resolveMemoryWorkspaceTarget(c *gin.Context) {
+	if s.internalToken == "" || s.store == nil {
+		c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "workspace authority unavailable"})
+		return
+	}
+	if subtle.ConstantTimeCompare([]byte(c.GetHeader("X-Builder-Internal-Token")), []byte(s.internalToken)) != 1 {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid internal token"})
+		return
+	}
+	tenant, name := c.Query("tenant"), c.Query("namespace")
+	if tenant == "" || name == "" {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "tenant and namespace are required"})
+		return
+	}
+	namespace, err := s.store.Access().GetNamespace(c.Request.Context(), tenant, name)
+	if err != nil {
+		s.accessFailure(c, err)
+		return
+	}
+	if namespace.Kind != "shared" || namespace.Archived {
+		c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": "shared workspace not found"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"workspaceId": namespace.Tenant + "/" + namespace.Name})
+}
