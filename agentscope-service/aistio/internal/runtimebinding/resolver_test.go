@@ -221,8 +221,11 @@ func TestResolverDispatchesSameAgentTaskContractToEveryBackend(t *testing.T) {
 		}
 		failed, getErr := st.Collaboration().GetAgentTask(ctx, reviewTask.ID)
 		if getErr != nil || failed.Status != controlmodel.AgentTaskFailed ||
-			failed.ErrorCode != "managed_manual_review_required" {
+			failed.ErrorCode != controlmodel.AgentTaskFailureManualReviewRequired {
 			t.Fatalf("manual review should stop automatic requeue: task=%+v err=%v", failed, getErr)
+		}
+		if _, retryErr := st.Collaboration().RetryAgentTask(ctx, failed.ID, creator); !errors.Is(retryErr, store.ErrConflict) {
+			t.Fatalf("manual review task must reject explicit retry: %v", retryErr)
 		}
 	})
 

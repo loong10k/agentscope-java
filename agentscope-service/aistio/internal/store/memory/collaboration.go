@@ -1413,7 +1413,8 @@ func (r *collaborationRepo) RetryAgentTask(_ context.Context, id uuid.UUID, acto
 	if failed == nil {
 		return nil, store.ErrNotFound
 	}
-	if failed.Status != controlmodel.AgentTaskFailed {
+	if failed.Status != controlmodel.AgentTaskFailed ||
+		failed.ErrorCode == controlmodel.AgentTaskFailureManualReviewRequired {
 		return nil, store.ErrConflict
 	}
 	retryID := failed.ID

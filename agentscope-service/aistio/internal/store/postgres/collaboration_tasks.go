@@ -905,7 +905,8 @@ func (r *collaborationRepo) RetryAgentTask(ctx context.Context, id uuid.UUID, ac
 	if err != nil {
 		return nil, err
 	}
-	if failed.Status != controlmodel.AgentTaskFailed {
+	if failed.Status != controlmodel.AgentTaskFailed ||
+		failed.ErrorCode == controlmodel.AgentTaskFailureManualReviewRequired {
 		return nil, store.ErrConflict
 	}
 	issue, err := scanIssue(tx.QueryRow(ctx, `SELECT `+issueColumns+` FROM issues WHERE id=$1`, failed.IssueID))

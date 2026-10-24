@@ -310,7 +310,7 @@ func (r *Resolver) dispatchManaged(ctx context.Context, taskID uuid.UUID, candid
 			_, _, failErr := r.Store.Collaboration().FailAgentTaskWithAttempt(ctx, task.ID, store.TaskFailure{
 				ExpectedVersion: dispatched.Version, AttemptID: attempt.ID,
 				DispatchGeneration: attempt.DispatchGeneration,
-				Code:               "managed_manual_review_required", Message: err.Error()})
+				Code:               controlmodel.AgentTaskFailureManualReviewRequired, Message: err.Error()})
 			if failErr != nil {
 				return nil, errors.Join(err, failErr)
 			}

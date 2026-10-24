@@ -254,6 +254,9 @@ func CanTransitionAgentTask(from, to AgentTaskStatus) bool {
 // AgentTaskReviewComment handles feedback without reopening the original work.
 const AgentTaskReviewComment = "review_comment"
 
+// AgentTaskFailureManualReviewRequired 标识未知工具结果，禁止重试原任务。
+const AgentTaskFailureManualReviewRequired = "managed_manual_review_required"
+
 type AgentTask struct {
 	ID                  uuid.UUID        `json:"id"`
 	Tenant              string           `json:"tenant"`
