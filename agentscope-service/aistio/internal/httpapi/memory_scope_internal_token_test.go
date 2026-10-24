@@ -90,3 +90,33 @@ func TestMemoryWorkspaceTargetRequiresLiveSharedNamespace(t *testing.T) {
 		}
 	}
 }
+
+// 运行期证明覆盖所有租户，且排除非成员、个人空间和已归档工作区。
+func TestCurrentMemoryWorkspacesCoversMemberNamespacesAcrossTenants(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, store.Config{Driver: store.DriverMemory})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	for _, namespace := range []*model.Namespace{
+		{Tenant: "default", Name: "team-a", Kind: "shared", Owner: "alice", Members: map[string][]string{"bob": {"member"}}},
+		{Tenant: "other", Name: "team-a", Kind: "shared", Owner: "alice", Members: map[string][]string{"bob": {"member"}}},
+		{Tenant: "other", Name: "team-b", Kind: "shared", Owner: "alice", Members: map[string][]string{"bob": {"member"}}},
+		{Tenant: "other", Name: "not-member", Kind: "shared", Owner: "alice"},
+		{Tenant: "other", Name: "personal", Kind: "personal", Owner: "bob"},
+		{Tenant: "other", Name: "archived", Kind: "shared", Owner: "bob", Archived: true},
+	} {
+		if _, err := st.Access().PutNamespace(ctx, namespace, 0, "alice"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	server := &Server{store: st, defaultTenant: "default"}
+	workspaces, err := server.currentMemoryWorkspaces(ctx, "bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(workspaces) != 3 || workspaces[0] != "default/team-a" || workspaces[1] != "other/team-a" || workspaces[2] != "other/team-b" {
+		t.Fatalf("workspaces = %v, want all tenant-qualified memberships", workspaces)
+	}
+}

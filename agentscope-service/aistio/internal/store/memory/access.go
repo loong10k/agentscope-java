@@ -126,6 +126,26 @@ func (r *accessRepo) ListNamespaces(_ context.Context, tenant, user string, limi
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return page(out, offset, limit), nil
 }
+func (r *accessRepo) ListMemberSharedNamespaces(_ context.Context, user string, limit, offset int) ([]*controlmodel.Namespace, error) {
+	if user == "" {
+		return nil, store.ErrNotFound
+	}
+	r.s.mu.RLock()
+	defer r.s.mu.RUnlock()
+	out := []*controlmodel.Namespace{}
+	for _, n := range r.s.accessNamespaces {
+		if n.Kind == "shared" && !n.Archived && len(n.Roles(user)) > 0 {
+			out = append(out, cloneNamespace(n))
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Tenant != out[j].Tenant {
+			return out[i].Tenant < out[j].Tenant
+		}
+		return out[i].Name < out[j].Name
+	})
+	return page(out, offset, limit), nil
+}
 func (r *accessRepo) PutNamespace(_ context.Context, n *controlmodel.Namespace, version int64, actor string) (*controlmodel.Namespace, error) {
 	if err := n.Validate(); err != nil {
 		return nil, err

@@ -27,6 +27,8 @@ type AccessRepository interface {
 	GetNamespace(context.Context, string, string) (*controlmodel.Namespace, error)
 	// ListNamespaces filters membership before pagination. Empty user is admin inventory.
 	ListNamespaces(context.Context, string, string, int, int) ([]*controlmodel.Namespace, error)
+	// ListMemberSharedNamespaces filters active shared memberships across tenants before pagination.
+	ListMemberSharedNamespaces(context.Context, string, int, int) ([]*controlmodel.Namespace, error)
 	// PutNamespace uses optimistic concurrency; version zero means create only.
 	PutNamespace(context.Context, *controlmodel.Namespace, int64, string) (*controlmodel.Namespace, error)
 	TransferNamespace(context.Context, string, string, string, int64, string) (*controlmodel.Namespace, error)

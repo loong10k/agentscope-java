@@ -85,7 +85,7 @@ func (s *Server) currentMemoryWorkspaces(ctx context.Context, user string) ([]st
 	}
 	workspaces := []string{}
 	for offset := 0; offset < 10000; offset += 500 {
-		items, listErr := s.store.Access().ListNamespaces(ctx, s.defaultTenant, user, 500, offset)
+		items, listErr := s.store.Access().ListMemberSharedNamespaces(ctx, user, 500, offset)
 		if listErr != nil {
 			return nil, listErr
 		}

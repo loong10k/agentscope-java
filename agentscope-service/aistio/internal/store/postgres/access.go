@@ -63,6 +63,28 @@ func (r *accessRepo) ListNamespaces(ctx context.Context, tenant, user string, li
 	}
 	return out, rows.Err()
 }
+func (r *accessRepo) ListMemberSharedNamespaces(ctx context.Context, user string, limit, offset int) ([]*controlmodel.Namespace, error) {
+	if user == "" {
+		return nil, store.ErrNotFound
+	}
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	rows, err := r.s.pool.Query(ctx, `SELECT payload,version FROM access_namespaces WHERE payload->>'kind'='shared' AND COALESCE((payload->>'archived')::boolean,false)=false AND (payload->>'owner'=$1 OR payload->'members' ? $1 OR EXISTS (SELECT 1 FROM jsonb_each(COALESCE(payload->'groups','{}'::jsonb)) g WHERE g.value->'members' ? $1)) ORDER BY tenant,name LIMIT $2 OFFSET $3`, user, limit, maxInt(offset, 0))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []*controlmodel.Namespace{}
+	for rows.Next() {
+		n, err := scanNamespace(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, n)
+	}
+	return out, rows.Err()
+}
 func (r *accessRepo) PutNamespace(ctx context.Context, n *controlmodel.Namespace, version int64, actor string) (*controlmodel.Namespace, error) {
 	if err := n.Validate(); err != nil {
 		return nil, err
