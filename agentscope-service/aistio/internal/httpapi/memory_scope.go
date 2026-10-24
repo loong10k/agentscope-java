@@ -68,5 +68,24 @@ func (s *Server) resolveMemoryScope(c *gin.Context) {
 	if resolved.Members == nil {
 		resolved.Members = map[string][]string{}
 	}
-	c.JSON(http.StatusOK, gin.H{"userId": claims.Subject, "namespace": resolved})
+	// 向 Rust 提供本次请求实时核验的具名共享空间，而不是让浏览器声明成员资格。
+	// 分页取尽并设置上限；超限或控制面读取失败时整次请求失败，不能返回不完整证明。
+	workspaces := []string{}
+	for offset := 0; offset < 10000; offset += 500 {
+		items, listErr := s.store.Access().ListNamespaces(c.Request.Context(), s.defaultTenant, claims.Subject, 500, offset)
+		if listErr != nil {
+			s.accessFailure(c, listErr)
+			return
+		}
+		for _, item := range items {
+			if item.Kind == "shared" && len(item.Roles(claims.Subject)) > 0 {
+				workspaces = append(workspaces, item.Tenant+"/"+item.Name)
+			}
+		}
+		if len(items) < 500 {
+			c.JSON(http.StatusOK, gin.H{"userId": claims.Subject, "namespace": resolved, "workspaces": workspaces})
+			return
+		}
+	}
+	c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "workspace membership limit exceeded"})
 }
