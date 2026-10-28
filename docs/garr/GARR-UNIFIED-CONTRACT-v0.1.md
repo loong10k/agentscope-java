@@ -285,12 +285,12 @@ stateDiagram-v2
 | 仓库 | 优先复用的已存在框架对象 | GARR 接入形式 | 当前 GARR 代码状态（2026-10-28） |
 | --- | --- | --- | --- |
 | agentscope-rust | Agent / ReActAgent / Model / Toolkit / Harness | 可选 `agentscope-extensions-garr` + Mock/ReAct 只读适配 | **P0 + 部分 P1**，未生产就绪 |
-| agentscope-java | ReActAgent / AgentTool / RuntimeContext / Harness | 同一 Wire Contract 与有界 Planner/Frame Adapter | **未实现，仅有草案** |
-| agentscope-kotlin | ReActAgent / SuspendAgentTool / Flow / Harness | 同一 Wire Contract；协程/Android 适配 | **未实现，仅有草案** |
-| agentscope-swift | Agent / ReAct 扩展 / Swift concurrency | 同一 Wire Contract；Sendable/actor 适配 | **未实现，仅有草案** |
-| agentscope-typescript | Agent / Toolkit / 事件 | 同一 Wire Contract；Promise/AbortSignal 适配 | **未实现，仅有草案** |
-| agentscope-zig | ReActAgent / Toolkit / 嵌入式运行接口 | 同一 Wire Contract 的有界 ClientLite 或等价完整引擎 | **未实现，仅有草案** |
-| agentscope-cpp | ReActAgent / Toolkit / ESP32 C++17 | 同一 Wire Contract 的有界 ClientLite；设备侧安全独立执行 | **未实现，仅有草案** |
+| agentscope-java | ReActAgent / AgentTool / RuntimeContext / Harness | 本地 Java P0 Planner + Maven 扩展；Frame Adapter 待接 | **P0 已实现，JUnit 12 项通过（10 个共享 Fixture 场景）；P1 待实现** |
+| agentscope-kotlin | ReActAgent / SuspendAgentTool / Flow / Harness | Kotlin P0 Planner + Gradle 扩展；Android Frame Adapter 待接 | **P0 JVM 已实现，共享 Fixture 10 场景通过；Android 未验收** |
+| agentscope-swift | Agent / ReAct 扩展 / Swift concurrency | Swift P0 Planner / SPM Target；Actor Frame Adapter 待接 | **已写 P0 源码/测试；Swift 编译未验证** |
+| agentscope-typescript | Agent / Toolkit / 事件 | TS P0 Planner + 包导出；AbortSignal Frame Adapter 待接 | **P0 实现，统一 Fixture 10 场景通过；打包未验收** |
+| agentscope-zig | ReActAgent / Toolkit / 嵌入式运行接口 | 固定容量 P0 + ClientLite 后续，使用同一 CPARP/0.1 规则 | **P0 有界 Host 6 项通过；设备/协议未验收** |
+| agentscope-cpp | ReActAgent / Toolkit / ESP32 C++17 | 固定容量 P0 Header-only + ClientLite 后续 | **P0 C++17 Host 通过；ESP32/协议未验收** |
 
 语言适配说明允许指定 `async/await`、Reactor、Flow、Actor、Promise、固定容量缓冲区、构建命令与源代码路径；**不允许**定义自己的 Planner 决策顺序、约束降级路径、事件枚举或默认完成状态。
 

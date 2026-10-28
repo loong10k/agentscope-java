@@ -38,6 +38,7 @@
         <module>agentscope-extensions-cos</module>
         <module>agentscope-extensions-redis</module>
         <module>agentscope-extensions-mysql</module>
+        <module>agentscope-extensions-garr</module>
         <module>agentscope-extensions-postgresql</module>
         <module>agentscope-extensions-mongodb</module>
         <module>agentscope-extensions-jdbc</module>

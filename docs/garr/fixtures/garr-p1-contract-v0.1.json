@@ -1,0 +1,57 @@
+{
+  "schema_version": "garr-p1-contract/0.1",
+  "fixtures": [
+    {
+      "id": "GARR-P1-01",
+      "case": "receipts_complete",
+      "expected": "completed"
+    },
+    {
+      "id": "GARR-P1-02",
+      "case": "missing_receipts",
+      "expected": "partial"
+    },
+    {
+      "id": "GARR-P1-03",
+      "case": "scope_revision_mismatch",
+      "expected": "blocked"
+    },
+    {
+      "id": "GARR-P1-04",
+      "case": "duplicate_frame",
+      "expected": "blocked"
+    },
+    {
+      "id": "GARR-P1-05",
+      "case": "unauthorized_evidence",
+      "expected": "blocked"
+    },
+    {
+      "id": "GARR-P1-06",
+      "case": "cancel_before_port",
+      "expected": "cancelled",
+      "expected_port_calls": 0
+    },
+    {
+      "id": "GARR-P1-07",
+      "case": "port_failure",
+      "expected": "failed"
+    },
+    {
+      "id": "GARR-P1-08",
+      "case": "missing_boundary_verifier",
+      "expected": "partial"
+    },
+    {
+      "id": "GARR-P1-09",
+      "case": "budget_reuse",
+      "expected": "budget_exhausted"
+    },
+    {
+      "id": "GARR-P1-10",
+      "case": "bounded_device_exceeds_limit",
+      "expected": "unsupported_capability"
+    }
+  ],
+  "note": "Portable conformance vectors with abstract cases. Per-language tests must ground each case in explicit native fixture construction."
+}
