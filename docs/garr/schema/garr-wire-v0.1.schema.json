@@ -1,0 +1,433 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:partme:agentscope:garr:wire:0.1",
+  "title": "GARR Wire Contract 0.1 (Draft)",
+  "description": "Schema of PlanRequest/PlanResponse/Event shared by all AgentScope languages; not proof of implementation.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/PlanRequest"
+    },
+    {
+      "$ref": "#/$defs/PlanResponse"
+    },
+    {
+      "$ref": "#/$defs/Event"
+    }
+  ],
+  "$defs": {
+    "Graph": {
+      "type": "object",
+      "required": [
+        "scope",
+        "revision"
+      ],
+      "properties": {
+        "scope": {
+          "type": "string",
+          "minLength": 1
+        },
+        "revision": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "Task": {
+      "type": "object",
+      "required": [
+        "task_id",
+        "goal",
+        "phase",
+        "anchors",
+        "obligation_refs"
+      ],
+      "properties": {
+        "task_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "goal": {
+          "type": "string",
+          "minLength": 1
+        },
+        "phase": {
+          "enum": [
+            "analyze",
+            "design",
+            "implement",
+            "verify"
+          ]
+        },
+        "anchors": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "obligation_refs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "Budget": {
+      "type": "object",
+      "required": [
+        "max_tokens",
+        "max_model_calls",
+        "max_graph_reads",
+        "max_cost_microusd",
+        "deadline_ms",
+        "max_depth",
+        "max_children",
+        "max_parallel_frames"
+      ],
+      "properties": {
+        "max_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_model_calls": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_graph_reads": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_cost_microusd": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "deadline_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_depth": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_children": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_parallel_frames": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "Child": {
+      "type": "object",
+      "required": [
+        "frame_id",
+        "domains",
+        "obligation_refs"
+      ],
+      "properties": {
+        "frame_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "domains": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "obligation_refs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "Plan": {
+      "type": "object",
+      "required": [
+        "mode",
+        "children",
+        "dependencies",
+        "join_obligation_refs",
+        "boundary_contract_refs"
+      ],
+      "properties": {
+        "mode": {
+          "const": "and"
+        },
+        "children": {
+          "type": "array",
+          "minItems": 2,
+          "items": {
+            "$ref": "#/$defs/Child"
+          }
+        },
+        "dependencies": {
+          "type": "array"
+        },
+        "join_obligation_refs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "boundary_contract_refs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "Trace": {
+      "type": "object",
+      "required": [
+        "reason_code",
+        "considered_nodes",
+        "constraint_ids"
+      ],
+      "properties": {
+        "reason_code": {
+          "type": "string",
+          "minLength": 1
+        },
+        "considered_nodes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "constraint_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "Error": {
+      "type": "object",
+      "required": [
+        "code",
+        "message"
+      ],
+      "properties": {
+        "code": {
+          "enum": [
+            "unsupported_capability",
+            "invalid_schema_version",
+            "snapshot_mismatch",
+            "scope_denied",
+            "constraint_unresolved",
+            "evidence_missing",
+            "budget_exhausted",
+            "frame_cycle",
+            "invalid_transition",
+            "verification_incomplete",
+            "execution_failed",
+            "cancelled"
+          ]
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "PlanRequest": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "request_id",
+        "run_id",
+        "task",
+        "graph_snapshot",
+        "policy_id",
+        "budget_limits"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "garr/0.1"
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "task": {
+          "$ref": "#/$defs/Task"
+        },
+        "graph_snapshot": {
+          "$ref": "#/$defs/Graph"
+        },
+        "policy_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "budget_limits": {
+          "$ref": "#/$defs/Budget"
+        },
+        "context_refs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "PlanResponse": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "request_id",
+        "run_id",
+        "decision",
+        "policy_id",
+        "graph_snapshot",
+        "trace"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "garr/0.1"
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "decision": {
+          "enum": [
+            "direct",
+            "probe",
+            "verify",
+            "split",
+            "blocked"
+          ]
+        },
+        "policy_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "graph_snapshot": {
+          "$ref": "#/$defs/Graph"
+        },
+        "trace": {
+          "$ref": "#/$defs/Trace"
+        },
+        "split_plan": {
+          "$ref": "#/$defs/Plan"
+        },
+        "error": {
+          "$ref": "#/$defs/Error"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "decision": {
+                "const": "split"
+              }
+            },
+            "required": [
+              "decision"
+            ]
+          },
+          "then": {
+            "required": [
+              "split_plan"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "decision": {
+                "const": "blocked"
+              }
+            },
+            "required": [
+              "decision"
+            ]
+          },
+          "then": {
+            "required": [
+              "error"
+            ]
+          }
+        }
+      ]
+    },
+    "Event": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "run_id",
+        "sequence",
+        "event_type",
+        "timestamp",
+        "graph_revision"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "garr/0.1"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "event_type": {
+          "enum": [
+            "run_started",
+            "frame_planned",
+            "frame_started",
+            "frame_completed",
+            "frame_failed",
+            "awaiting_approval",
+            "join_verified",
+            "run_completed",
+            "run_blocked",
+            "run_cancelled"
+          ]
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "frame_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "graph_revision": {
+          "type": "string",
+          "minLength": 1
+        },
+        "payload": {
+          "type": "object"
+        }
+      }
+    }
+  }
+}

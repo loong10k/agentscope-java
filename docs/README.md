@@ -1,5 +1,7 @@
 # AgentScope Java documentation · Mintlify
 
+> **GARR 跨语言唯一规范**：[GARR Unified Contract v0.1](./garr/GARR-UNIFIED-CONTRACT-v0.1.md)；[Java API 适配说明](./garr-implementation-v0.1.md)。仅为设计，不代表 Java GARR 已实现或 Mintlify 已发布。
+
 This directory is the complete Mintlify source for the AgentScope Java site. It includes
 v1 and v2 documentation in English and Chinese, the landing pages, SDK guides,
 Service, integrations, blog posts, and community pages. Java/Maven is not required

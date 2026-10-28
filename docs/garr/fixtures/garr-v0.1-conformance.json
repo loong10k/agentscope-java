@@ -1,0 +1,126 @@
+{
+  "schema_version": "garr/0.1",
+  "fixture_set": "partme.garr.cross_language/0.1",
+  "purpose": "统一规划语义的跨语言 Golden Fixture；尚未连接七语言自动执行器，不能据此宣称已通过。",
+  "policy_id": "garr-cparp-0.1",
+  "graph_fixtures": {
+    "single_domain": {
+      "scope": "project/demo",
+      "revision": "git:abc123",
+      "nodes": [{"node_id": "order", "node_kind": "component", "domain": "order"}],
+      "edges": [],
+      "constraints": []
+    },
+    "cross_contractible": {
+      "scope": "project/demo",
+      "revision": "git:abc123",
+      "nodes": [
+        {"node_id": "order", "node_kind": "component", "domain": "order"},
+        {"node_id": "payment", "node_kind": "component", "domain": "payment"}
+      ],
+      "edges": [{"from": "order", "to": "payment", "edge_kind": "calls", "evidence_state": "verified", "evidence_refs": ["code://calls"]}],
+      "constraints": [{
+        "constraint_id": "refund-policy",
+        "scope_nodes": ["order", "payment"],
+        "coupling": "contractible",
+        "phases": ["analyze", "implement"],
+        "severity": "hard",
+        "validator_ref": "verify-refund",
+        "evidence_state": "verified"
+      }]
+    },
+    "cross_atomic": {
+      "scope": "project/demo",
+      "revision": "git:abc123",
+      "nodes": [
+        {"node_id": "order", "node_kind": "component", "domain": "order"},
+        {"node_id": "payment", "node_kind": "component", "domain": "payment"}
+      ],
+      "edges": [{"from": "order", "to": "payment", "edge_kind": "calls", "evidence_state": "verified", "evidence_refs": ["code://calls"]}],
+      "constraints": [{
+        "constraint_id": "refund-policy",
+        "scope_nodes": ["order", "payment"],
+        "coupling": "atomic",
+        "phases": ["analyze", "implement"],
+        "severity": "hard",
+        "evidence_state": "verified"
+      }]
+    },
+    "proposed_cross_edge": {
+      "scope": "project/demo",
+      "revision": "git:abc123",
+      "nodes": [
+        {"node_id": "order", "node_kind": "component", "domain": "order"},
+        {"node_id": "payment", "node_kind": "component", "domain": "payment"}
+      ],
+      "edges": [{"from": "order", "to": "payment", "edge_kind": "calls", "evidence_state": "proposed", "evidence_refs": ["hypothesis://order-payment"]}],
+      "constraints": []
+    },
+    "disputed_cross_edge": {
+      "scope": "project/demo",
+      "revision": "git:abc123",
+      "nodes": [
+        {"node_id": "order", "node_kind": "component", "domain": "order"},
+        {"node_id": "payment", "node_kind": "component", "domain": "payment"}
+      ],
+      "edges": [{"from": "order", "to": "payment", "edge_kind": "calls", "evidence_state": "disputed", "evidence_refs": ["dispute://order-payment"]}],
+      "constraints": []
+    },
+    "cross_precedes_only": {
+      "scope": "project/demo",
+      "revision": "git:abc123",
+      "nodes": [
+        {"node_id": "order", "node_kind": "component", "domain": "order"},
+        {"node_id": "payment", "node_kind": "component", "domain": "payment"}
+      ],
+      "edges": [{"from": "order", "to": "payment", "edge_kind": "precedes", "evidence_state": "verified", "evidence_refs": ["workflow://order-payment"]}],
+      "constraints": []
+    },
+    "cross_calls_only": {
+      "scope": "project/demo",
+      "revision": "git:abc123",
+      "nodes": [
+        {"node_id": "order", "node_kind": "component", "domain": "order"},
+        {"node_id": "payment", "node_kind": "component", "domain": "payment"}
+      ],
+      "edges": [{"from": "order", "to": "payment", "edge_kind": "calls", "evidence_state": "verified", "evidence_refs": ["code://order-payment"]}],
+      "constraints": []
+    }
+  },
+  "default_task": {
+    "goal": "分析订单取消的跨域影响",
+    "anchors": ["order"],
+    "obligation_refs": ["state-validity", "refund-consistency"],
+    "phase": "analyze",
+    "scope": "project/demo",
+    "graph_revision": "git:abc123",
+    "depth": 0
+  },
+  "default_budget": {
+    "max_tokens": 12000,
+    "max_model_calls": 8,
+    "max_graph_reads": 30,
+    "max_cost_microusd": 50000,
+    "deadline_ms": 30000,
+    "max_depth": 1,
+    "max_children": 3,
+    "max_parallel_frames": 2
+  },
+  "cases": [
+    {"case_id": "GARR-001", "graph_ref": "single_domain", "expected": {"decision": "direct", "child_frames": 0}},
+    {"case_id": "GARR-002A", "graph_ref": "proposed_cross_edge", "expected": {"decision": "probe"}},
+    {"case_id": "GARR-002B", "graph_ref": "disputed_cross_edge", "expected": {"decision": "verify"}},
+    {"case_id": "GARR-003A", "graph_ref": "cross_contractible", "overrides": {"task": {"phase": "implement"}}, "expected": {"decision": "split", "child_domains": [["order"], ["payment"]], "boundary_contract_refs": ["refund-policy"]}},
+    {"case_id": "GARR-003B", "graph_ref": "cross_atomic", "overrides": {"task": {"phase": "implement"}}, "expected": {"decision": "direct", "child_frames": 0}},
+    {"case_id": "GARR-004A", "graph_ref": "cross_precedes_only", "expected": {"decision": "direct"}},
+    {"case_id": "GARR-004B", "graph_ref": "cross_calls_only", "expected": {"decision": "split", "child_domains": [["order"], ["payment"]]}},
+    {"case_id": "GARR-006", "graph_ref": "cross_contractible", "overrides": {"task": {"graph_revision": "git:other"}}, "expected": {"decision": "blocked", "error_code": "snapshot_mismatch"}},
+    {"case_id": "GARR-007", "graph_ref": "cross_contractible", "overrides": {"budget": {"max_tokens": 4000}}, "expected": {"decision": "direct", "child_frames": 0}}
+  ],
+  "meta": {
+    "status": "specification_vectors_not_automatically_executed",
+    "required_execution_profiles": ["full_engine"],
+    "unsupported_profile_response": "unsupported_capability",
+    "notes": "消费方必须显式合并 default_task/default_budget 与 overrides（按对象字段覆盖，不是自由文本合并），然后对准同一 planner policy。完整 GARR-005..014 的错误/执行向量将在 P2 补齐。"
+  }
+}
